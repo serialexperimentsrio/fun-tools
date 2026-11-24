@@ -25,6 +25,7 @@
 | `new` | Create files or directories, including missing parents |
 | `dog` | Print files, optionally numbered or just the first/last lines |
 | `eco` | Print text, or pass stdin through |
+| `nav` | Change directory by path, by part of a name, or back to the previous one |
 | `idx` | List a directory, optionally as a tree |
 | `loc` | Find files and directories by name |
 | `hid` | Show information about the machine |
@@ -51,6 +52,10 @@ git diff | cop                           # copy text, paste anywhere
 cop --lines 10-20 main.rs                # copy lines 10 to 20 of a file
 put --at 5 other.rs                      # paste them in at line 5
 put --at end log.txt                     # or at the end (or --at start)
+
+nav web                      # jump to the nearest directory named like `web`
+nav -u 2                     # two levels up
+nav -                        # back to where you were
 
 idx -lr --depth 2            # two levels deep, with sizes and dates
 loc '*.rs' src -t file       # every Rust file under src
@@ -87,7 +92,15 @@ cargo test
 
 # install one tool, or all of them
 cargo install --path crates/dog
-for t in cop dat del dog eco hid idx loc mop mov new put sel usg; do cargo install --path crates/$t; done
+for t in cop dat del dog eco hid idx loc mop mov nav new put sel usg; do cargo install --path crates/$t; done
+```
+
+`nav` needs one line in your shell's startup file, because a program can't change the directory of the shell that started it. `nav` works out where to go and a small shell function does the `cd`:
+
+```sh
+eval "$(nav --init bash)"     # ~/.bashrc
+eval "$(nav --init zsh)"      # ~/.zshrc
+nav --init fish | source     # ~/.config/fish/config.fish
 ```
 
 `cop` and `put` need a graphical session (X11 or Wayland). Under WSL that's WSLg, and copied text also shows up in the Windows clipboard.

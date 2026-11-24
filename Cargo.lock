@@ -547,6 +547,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nav"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "common",
+]
+
+[[package]]
 name = "new"
 version = "0.1.0"
 dependencies = [
