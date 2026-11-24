@@ -22,7 +22,7 @@ struct Cli {
     utc: bool,
 
     /// Custom strftime format, e.g. "%Y-%m-%d %H:%M"
-    #[arg(short, long, value_name = "FMT", conflicts_with_all = ["date", "time"])]
+    #[arg(long, value_name = "FMT", conflicts_with_all = ["date", "time"])]
     format: Option<String>,
 
     /// Seconds since the Unix epoch

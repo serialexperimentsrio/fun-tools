@@ -19,7 +19,7 @@
 |------|--------------|
 | `cop` | Copy files, directories, piped text or lines of a file to the system clipboard |
 | `put` | Paste from the clipboard: files into a directory, text to stdout, a new file, or into a file at a line |
-| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on |
+| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on: `sel add`, `sel mop`, `sel idx`, `sel clear` |
 | `mov` | Move or rename files and directories |
 | `del` | Delete safely: `del file` goes to a dump; `del idx`, `del restore`, `del empty` manage it |
 | `new` | Create files or directories, including missing parents |
@@ -34,19 +34,25 @@
 | `mop` | Clear the screen |
 | `ted` | Text editor (not written yet) |
 
-Every tool has `--help`.
+Every tool except `ted` has `--help`. Wherever a subcommand is called `idx`, `index` works too.
 
 ## Examples
 
 ```sh
 sel add *.log old/           # pick some paths
-del -s                       # dump them all
-del idx                      # see what's in the dump
-del restore 3                # changed my mind about one
+sel mop old/                 # changed my mind about one (the folder stays put)
+sel idx                      # what's selected
+del -s                       # dump everything selected
 
-cop report.pdf && cd ~/docs && put      # copy here, paste there
+del notes.txt build/         # delete straight away (to the dump)
+del idx                      # see what's in the dump
+del restore 3                # put one back
+del empty --older-than 30    # purge for good (asks first)
+del ./idx                    # a file named like a subcommand
+
+cop report.pdf && nav ~/docs && put     # copy here, paste there
 cop report.pdf --to ~/docs               # or in one go
-cop -x notes/ && cd ~/archive && put     # cut and paste a directory
+cop -x notes/ && nav ~/archive && put    # cut and paste a directory
 git diff | cop                           # copy text, paste anywhere
 
 cop --lines 10-20 main.rs                # copy lines 10 to 20 of a file
@@ -65,7 +71,9 @@ hid -o os,cpu,ram --json
 
 ## How the flags work
 
-A tool that does one thing has no subcommands: `dog file.txt`. A tool that does several things takes the action as a subcommand: `sel add`, `del restore`. Flags only ever change how the action behaves, and a letter means the same thing in every tool that has it:
+A tool that does one thing has no subcommands: `dog file.txt`. A tool that does several things takes the action as a subcommand: `sel add`, `sel mop`. `del` is the one mix of both: plain paths are deleted, and `del idx`, `del restore` and `del empty` look after the dump.
+
+Flags change how the action behaves. These shared ones mean the same thing in every tool that has them:
 
 | Flag | Meaning |
 |------|---------|
@@ -78,9 +86,9 @@ A tool that does one thing has no subcommands: `dog file.txt`. A tool that does 
 | `--dry-run` | Show what would happen without changing anything |
 | `--json` | Machine-readable output |
 
-Nothing is overwritten without `-f`. Colors are used on a terminal only and can be turned off with `NO_COLOR=1`.
+Other short flags belong to one tool and are listed in its `--help`. Nothing is overwritten without `-f`. Colors are used on a terminal only and can be turned off with `NO_COLOR=1`.
 
-State (the selection and the dump) lives in `$XDG_DATA_HOME/fun-tools`, which is usually `~/.local/share/fun-tools`.
+State (the selection, the dump and a pending cut) lives in `$XDG_DATA_HOME/fun-tools`, which is usually `~/.local/share/fun-tools`.
 
 ## Building
 
@@ -103,7 +111,7 @@ eval "$(nav --init zsh)"      # ~/.zshrc
 nav --init fish | source     # ~/.config/fish/config.fish
 ```
 
-`cop` and `put` need a graphical session (X11 or Wayland). Under WSL that's WSLg, and copied text also shows up in the Windows clipboard.
+`cop` and `put` use the system clipboard, so they need a graphical session (X11 or Wayland); `cop --to` doesn't. Under WSL that's WSLg, and copied text also shows up in the Windows clipboard.
 
 ## License
 
