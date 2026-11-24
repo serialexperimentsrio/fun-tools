@@ -1,3 +1,132 @@
-fn main() {
-    println!("Hello, world!");
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::Parser;
+use common::At;
+
+/// Output file content.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Files to print. Reads stdin when left out, or for `-`
+    paths: Vec<PathBuf>,
+
+    /// Number every line
+    #[arg(short, long)]
+    number: bool,
+
+    /// Only print the first N lines of each file
+    #[arg(long, value_name = "N", conflicts_with = "last")]
+    first: Option<usize>,
+
+    /// Only print the last N lines of each file
+    #[arg(long, value_name = "N")]
+    last: Option<usize>,
+}
+
+fn main() -> ExitCode {
+    common::run(|| {
+        let cli = Cli::parse();
+        let mut out = io::BufWriter::new(io::stdout().lock());
+        let mut line_no = 0;
+
+        if cli.paths.is_empty() {
+            print(io::stdin().lock(), &mut out, &cli, &mut line_no)?;
+            return Ok(out.flush()?);
+        }
+
+        let mut ok = true;
+        for path in &cli.paths {
+            let result = if path == Path::new("-") {
+                print(io::stdin().lock(), &mut out, &cli, &mut line_no).at(path)
+            } else {
+                open(path).and_then(|f| print(f, &mut out, &cli, &mut line_no).at(path))
+            };
+            if let Err(e) = result {
+                if common::broken_pipe(&*e) {
+                    return Err(e);
+                }
+                out.flush()?;
+                common::warn(e);
+                ok = false;
+            }
+        }
+        out.flush()?;
+        common::finish(ok)
+    })
+}
+
+fn open(path: &Path) -> common::Result<BufReader<File>> {
+    let file = File::open(path).at(path)?;
+    if file.metadata().at(path)?.is_dir() {
+        return Err(format!("{}: is a directory", path.display()).into());
+    }
+    Ok(BufReader::new(file))
+}
+
+/// Writes one input to `out`. `line_no` carries on across files.
+fn print(mut input: impl BufRead, out: &mut impl Write, cli: &Cli, line_no: &mut usize) -> io::Result<()> {
+    if !cli.number && cli.first.is_none() && cli.last.is_none() {
+        io::copy(&mut input, out)?;
+        return Ok(());
+    }
+
+    let emit = |n: usize, line: &[u8], out: &mut dyn Write| -> io::Result<()> {
+        if cli.number {
+            write!(out, "{n:>6}  ")?;
+        }
+        out.write_all(line)
+    };
+
+    // Kept with their real line numbers, so `-n --last 5` shows where they are.
+    let mut tail = VecDeque::new();
+    let mut seen = 0;
+    let mut line = Vec::new();
+    // Bytes, not strings, so files that aren't valid UTF-8 still print.
+    // The limit is checked before reading so a terminal isn't asked for one line too many.
+    while cli.first != Some(seen) && input.read_until(b'\n', &mut line)? > 0 {
+        seen += 1;
+        *line_no += 1;
+        match cli.last {
+            Some(0) => {}
+            Some(n) => {
+                if tail.len() == n {
+                    tail.pop_front();
+                }
+                tail.push_back((*line_no, std::mem::take(&mut line)));
+            }
+            None => emit(*line_no, &line, out)?,
+        }
+        line.clear();
+    }
+    for (n, line) in tail {
+        emit(n, &line, out)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(args: &[&str], input: &str) -> String {
+        let cli = Cli::parse_from(std::iter::once("dog").chain(args.iter().copied()));
+        let mut out = Vec::new();
+        print(input.as_bytes(), &mut out, &cli, &mut 0).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn slices_and_numbers() {
+        let text = "a\nb\nc\nd";
+        assert_eq!(run(&[], text), text);
+        assert_eq!(run(&["--first", "2"], text), "a\nb\n");
+        assert_eq!(run(&["--last", "2"], text), "c\nd");
+        assert_eq!(run(&["--last", "0"], text), "");
+        assert_eq!(run(&["-n", "--first", "1"], text), "     1  a\n");
+        assert_eq!(run(&["-n", "--last", "1"], text), "     4  d");
+    }
 }
