@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -15,6 +15,10 @@ struct Cli {
 fn main() -> ExitCode {
     common::run(|| {
         let cli = Cli::parse();
+        // Escape codes in a file or pipe are just noise.
+        if !io::stdout().is_terminal() {
+            return Ok(());
+        }
         // Home the cursor, clear the screen, then (unless asked not to) the scrollback.
         let seq = if cli.keep_scrollback { "\x1b[H\x1b[2J" } else { "\x1b[H\x1b[2J\x1b[3J" };
         let mut out = io::stdout().lock();
