@@ -1,4 +1,6 @@
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -42,8 +44,12 @@ fn main() -> ExitCode {
         };
 
         let into_dir = dest.is_dir();
-        if sources.len() > 1 && !into_dir {
-            return Err(format!("{}: not a directory", dest.display()).into());
+        // `mov a.txt notes/` means "into notes", so a missing notes/ is an
+        // error rather than a rename to a file called notes.
+        let wants_dir = dest.as_os_str().as_bytes().ends_with(b"/");
+        if !into_dir && (sources.len() > 1 || wants_dir) {
+            let why = if dest.exists() { "not a directory" } else { "no such directory" };
+            return Err(format!("{}: {why}", dest.display()).into());
         }
 
         let mut ok = true;
@@ -75,16 +81,28 @@ fn main() -> ExitCode {
 }
 
 fn move_one(src: &Path, target: &Path, cli: &Cli) -> common::Result {
-    fs::symlink_metadata(src).at(src)?;
-    let src_real = fs::canonicalize(src).at(src)?;
+    let src_meta = fs::symlink_metadata(src).at(src)?;
+    // full_path rather than canonicalize: a symlink is moved as itself, so
+    // moving a link into the directory it points at is fine.
+    let src_full = common::full_path(src).at(src)?;
     let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    if fs::canonicalize(parent).at(parent)?.starts_with(&src_real) {
+    if fs::canonicalize(parent).at(parent)?.starts_with(&src_full) {
         return Err(format!("{}: can't move a directory into itself", src.display()).into());
     }
 
-    if fs::symlink_metadata(target).is_ok() {
-        if fs::canonicalize(target).ok().as_ref() == Some(&src_real) {
-            return Err(format!("{}: source and destination are the same", src.display()).into());
+    if let Ok(target_meta) = fs::symlink_metadata(target) {
+        if target_meta.dev() == src_meta.dev() && target_meta.ino() == src_meta.ino() {
+            // On a case-insensitive drive (WSL's /mnt/c) `File` *is* `file`,
+            // so this is a plain rename. Otherwise it's a second hard link to
+            // the same file, and rename() would silently do nothing.
+            if !same_name_ignoring_case(src, target) {
+                return Err(format!("{}: is the same file as {}", target.display(), src.display()).into());
+            }
+            if cli.dry_run {
+                println!("{} -> {}", src.display(), target.display());
+                return Ok(());
+            }
+            return fs::rename(src, target).at(src);
         }
         if !cli.force {
             return Err(format!("{}: already exists (use -f to replace it)", target.display()).into());
@@ -96,4 +114,9 @@ fn move_one(src: &Path, target: &Path, cli: &Cli) -> common::Result {
         return Ok(());
     }
     common::replace(target, || common::move_path(src, target)).at(src)
+}
+
+fn same_name_ignoring_case(a: &Path, b: &Path) -> bool {
+    let lower = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    lower(a).is_some() && lower(a) == lower(b)
 }
