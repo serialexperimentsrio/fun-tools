@@ -115,7 +115,31 @@ pub fn full_path(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-/// The list of paths picked with `sel`, one absolute path per line.
+/// Reads a list of paths stored one per line. A missing file is an empty list.
+pub fn read_paths(file: &Path) -> Result<Vec<PathBuf>> {
+    match fs::read(file) {
+        // ponytail: newline-separated, so a file name containing a newline
+        // breaks it. Switch to NUL separators if that ever matters.
+        Ok(bytes) => Ok(bytes
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| PathBuf::from(OsStr::from_bytes(line)))
+            .collect()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).at(file),
+    }
+}
+
+pub fn write_paths(file: &Path, paths: &[PathBuf]) -> Result {
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.extend_from_slice(path.as_os_str().as_bytes());
+        bytes.push(b'\n');
+    }
+    fs::write(file, bytes).at(file)
+}
+
+/// The list of paths picked with `sel`.
 pub mod selection {
     use super::*;
 
@@ -124,28 +148,11 @@ pub mod selection {
     }
 
     pub fn load() -> Result<Vec<PathBuf>> {
-        let file = file()?;
-        match fs::read(&file) {
-            // ponytail: newline-separated, so a file name containing a newline
-            // breaks it. Switch to NUL separators if that ever matters.
-            Ok(bytes) => Ok(bytes
-                .split(|&b| b == b'\n')
-                .filter(|line| !line.is_empty())
-                .map(|line| PathBuf::from(OsStr::from_bytes(line)))
-                .collect()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e).at(&file),
-        }
+        read_paths(&file()?)
     }
 
     pub fn save(paths: &[PathBuf]) -> Result {
-        let mut bytes = Vec::new();
-        for path in paths {
-            bytes.extend_from_slice(path.as_os_str().as_bytes());
-            bytes.push(b'\n');
-        }
-        let file = file()?;
-        fs::write(&file, bytes).at(&file)
+        write_paths(&file()?, paths)
     }
 
     /// Loads the selection and fails if it's empty, for tools run with `-s`.
