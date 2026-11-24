@@ -12,7 +12,7 @@ use common::{At, paint, selection};
 
 /// Delete files and directories safely. They go to a dump first and can be
 /// restored until the dump is emptied. To delete a file named like one of
-/// the subcommands, write it as a path: `del ./ls`.
+/// the subcommands, write it as a path: `del ./idx`.
 #[derive(Parser)]
 #[command(version, args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 struct Cli {
@@ -35,10 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Action {
     /// List what's in the dump
-    Ls,
+    #[command(visible_alias = "index")]
+    Idx,
     /// Put dumped entries back where they came from
     Restore {
-        /// Entry ids, as shown by `del ls`
+        /// Entry ids, as shown by `del idx`
         #[arg(required = true)]
         ids: Vec<u64>,
 
@@ -78,7 +79,7 @@ fn main() -> ExitCode {
         fs::create_dir_all(&dump).at(&dump)?;
 
         match cli.action {
-            Some(Action::Ls) => list(&dump),
+            Some(Action::Idx) => list(&dump),
             Some(Action::Restore { ids, force }) => restore(&dump, &ids, force),
             Some(Action::Empty { older_than, dry_run, yes }) => empty(&dump, older_than, dry_run, yes),
             None => {

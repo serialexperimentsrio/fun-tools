@@ -21,7 +21,7 @@
 | `put` | Paste from the clipboard: files into a directory, text to stdout, a new file, or into a file at a line |
 | `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on |
 | `mov` | Move or rename files and directories |
-| `del` | Delete safely: `del file` goes to a dump; `del ls`, `del restore`, `del empty` manage it |
+| `del` | Delete safely: `del file` goes to a dump; `del idx`, `del restore`, `del empty` manage it |
 | `new` | Create files or directories, including missing parents |
 | `dog` | Print files, optionally numbered or just the first/last lines |
 | `eco` | Print text, or pass stdin through |
@@ -41,7 +41,7 @@ Every tool has `--help`.
 ```sh
 sel add *.log old/           # pick some paths
 del -s                       # dump them all
-del ls                       # see what's in the dump
+del idx                      # see what's in the dump
 del restore 3                # changed my mind about one
 
 cop report.pdf && cd ~/docs && put      # copy here, paste there

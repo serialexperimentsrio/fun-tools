@@ -27,7 +27,8 @@ enum Action {
         paths: Vec<PathBuf>,
     },
     /// List the selection
-    Ls,
+    #[command(visible_alias = "index")]
+    Idx,
     /// Empty the selection
     Clear,
 }
@@ -65,7 +66,7 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
-            Action::Ls => {
+            Action::Idx => {
                 let color = common::color();
                 let mut out = io::stdout().lock();
                 for path in &selected {
