@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+
+members = [
+  "cop",
+  "dat",
+  "del",
+  "dog",
+  "eco",
+  "idx",
+  "loc",
+  "mid",
+  "mop",
+  "new",
+  "sel",
+  "ted",
+  "usg",
+]
