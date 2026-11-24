@@ -43,11 +43,18 @@ fn make_dir(path: &Path) -> common::Result {
     if path.is_file() {
         return Err(format!("{}: a file with that name exists", path.display()).into());
     }
+    if let Some(blocker) = path.ancestors().skip(1).find(|a| a.is_file()) {
+        return Err(format!("{}: {} is a file, not a directory", path.display(), blocker.display()).into());
+    }
     fs::create_dir_all(path).at(path)
 }
 
 fn make_file(path: &Path, force: bool) -> common::Result {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        // create_dir_all only says "File exists" when part of the way is a file.
+        if let Some(blocker) = parent.ancestors().find(|a| a.is_file()) {
+            return Err(format!("{}: {} is a file, not a directory", path.display(), blocker.display()).into());
+        }
         fs::create_dir_all(parent).at(parent)?;
     }
     if path.is_dir() {
