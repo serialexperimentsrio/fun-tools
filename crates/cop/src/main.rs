@@ -157,7 +157,8 @@ fn main() -> ExitCode {
 
 fn copy_to(dir: &Path, paths: &[PathBuf], cli: &Cli) -> common::Result {
     if !dir.is_dir() {
-        return Err(format!("{}: not a directory", dir.display()).into());
+        let why = if dir.exists() { "not a directory" } else { "no such directory" };
+        return Err(format!("{}: {why}", dir.display()).into());
     }
     let how = Place { cut: false, force: cli.force, dry_run: cli.dry_run };
     let mut ok = true;

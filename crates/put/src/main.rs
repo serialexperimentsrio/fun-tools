@@ -78,6 +78,11 @@ fn paste_text(cli: &Cli, text: &str) -> common::Result {
         io::stdout().lock().write_all(text.as_bytes())?;
         return Ok(());
     };
+    if dest.is_dir() || dest.as_os_str().as_encoded_bytes().ends_with(b"/") {
+        return Err(
+            format!("{}: the clipboard holds text, which needs a file name, not a directory", dest.display()).into()
+        );
+    }
     if let Some(pos) = cli.at {
         return insert(dest, text, pos, cli.dry_run);
     }
@@ -151,7 +156,8 @@ fn splice(old: &str, text: &str, pos: Pos) -> Result<(String, usize), String> {
 fn paste_files(cli: &Cli, paths: &[PathBuf], clipboard: &mut Clipboard) -> common::Result {
     let dest = cli.dest.clone().unwrap_or_else(|| PathBuf::from("."));
     if !dest.is_dir() {
-        return Err(format!("{}: not a directory", dest.display()).into());
+        let why = if dest.exists() { "not a directory" } else { "no such directory" };
+        return Err(format!("{}: {why}", dest.display()).into());
     }
 
     // `cop -x` leaves the list it cut behind; if it still matches what's on
