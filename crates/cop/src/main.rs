@@ -126,7 +126,10 @@ fn main() -> ExitCode {
                 return Err("--cut only works with paths".into());
             }
             let mut text = String::new();
-            io::stdin().read_to_string(&mut text)?;
+            io::stdin().read_to_string(&mut text).map_err(|e| match e.kind() {
+                io::ErrorKind::InvalidData => "piped input isn't UTF-8 text; copy the file itself instead".to_string(),
+                _ => e.to_string(),
+            })?;
             Payload::Text(text)
         } else {
             return Err("nothing to copy: give some paths or pipe in text".into());

@@ -67,7 +67,7 @@ fn main() -> ExitCode {
         }
         match clipboard.get_text() {
             Ok(text) => paste_text(&cli, &text),
-            Err(ClipError::ContentNotAvailable) => Err("the clipboard is empty".into()),
+            Err(ClipError::ContentNotAvailable) => Err("nothing to paste: the clipboard holds no files or text".into()),
             Err(e) => Err(e.into()),
         }
     })
