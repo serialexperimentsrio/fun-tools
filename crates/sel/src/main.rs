@@ -21,8 +21,8 @@ enum Action {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
-    /// Remove paths from the selection
-    Rm {
+    /// Take paths out of the selection (the files themselves stay put)
+    Mop {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
@@ -53,7 +53,7 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
-            Action::Rm { paths } => {
+            Action::Mop { paths } => {
                 for path in paths {
                     // The path may be gone already, so fall back to a plain absolute path.
                     let abs = common::full_path(&path).or_else(|_| path::absolute(&path)).at(&path)?;
