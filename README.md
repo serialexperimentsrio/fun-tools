@@ -84,3 +84,9 @@ for t in cop dat del dog eco hid idx loc mop mov new put sel usg; do cargo insta
 ```
 
 `cop` and `put` need a graphical session (X11 or Wayland). Under WSL that's WSLg, and copied text also shows up in the Windows clipboard.
+
+## License
+
+Copyright 2026 Rio <engineer@disr.it>
+
+Licensed under the MIT License. See [LICENSE](LICENSE) for details.
