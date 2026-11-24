@@ -95,13 +95,22 @@ fn add(dump: &Path, paths: &[PathBuf], selected: bool, dry_run: bool) -> common:
     let mut ok = true;
     let mut dumped = Vec::new();
     let mut out = io::stdout().lock();
+    let terminal = out.is_terminal();
 
     for path in paths {
         let result = (|| -> common::Result<u64> {
+            if is_dot(path) {
+                return Err(format!("{}: refusing to delete `.` or `..`", path.display()).into());
+            }
             fs::symlink_metadata(path).at(path)?;
             let full = common::full_path(path).at(path)?;
             if dump.starts_with(&full) {
                 return Err(format!("{}: that would dump the dump itself", path.display()).into());
+            }
+            if full.starts_with(dump) {
+                return Err(
+                    format!("{}: already in the dump (see `del restore` and `del empty`)", path.display()).into()
+                );
             }
             if dry_run {
                 return Ok(0);
@@ -122,16 +131,22 @@ fn add(dump: &Path, paths: &[PathBuf], selected: bool, dry_run: bool) -> common:
             fs::write(dir.join("origin"), origin).at(&dir)?;
 
             if let Err(e) = common::move_path(&full, &dir.join("data")) {
-                let _ = fs::remove_dir_all(&dir);
+                let _ = common::remove_path(&dir);
                 return Err(e).at(path);
             }
             Ok(next_id - 1)
         })();
 
         match result {
-            Ok(_) if dry_run => writeln!(out, "would dump {}", path.display())?,
+            Ok(_) if dry_run => {
+                write!(out, "would dump ")?;
+                common::write_path(&mut out, path, terminal)?;
+                writeln!(out)?;
+            }
             Ok(id) => {
-                writeln!(out, "{id:>4}  {}", path.display())?;
+                write!(out, "{id:>4}  ")?;
+                common::write_path(&mut out, path, terminal)?;
+                writeln!(out)?;
                 dumped.push(path.clone());
             }
             Err(e) => {
@@ -150,10 +165,13 @@ fn add(dump: &Path, paths: &[PathBuf], selected: bool, dry_run: bool) -> common:
 fn list(dump: &Path) -> common::Result {
     let color = common::color();
     let mut out = io::stdout().lock();
+    let terminal = out.is_terminal();
     for entry in entries(dump)? {
         let when = Local.timestamp_opt(entry.when as i64, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string());
         let when = paint(&when.unwrap_or_default(), common::DIM, color);
-        writeln!(out, "{:>4}  {when}  {}", entry.id, entry.origin.display())?;
+        write!(out, "{:>4}  {when}  ", entry.id)?;
+        common::write_path(&mut out, &entry.origin, terminal)?;
+        writeln!(out)?;
     }
     Ok(())
 }
@@ -172,7 +190,7 @@ fn restore(dump: &Path, ids: &[u64], force: bool) -> common::Result {
                 fs::create_dir_all(parent).at(parent)?;
             }
             common::replace(origin, || common::move_path(&entry.dir.join("data"), origin)).at(origin)?;
-            fs::remove_dir_all(&entry.dir).at(&entry.dir)
+            common::remove_path(&entry.dir).at(&entry.dir)
         })();
         if let Err(e) = result {
             common::warn(e);
@@ -204,7 +222,7 @@ fn empty(dump: &Path, older_than: Option<u64>, dry_run: bool, yes: bool) -> comm
             println!("would delete {:>4}  {}", entry.id, entry.origin.display());
             continue;
         }
-        match fs::remove_dir_all(&entry.dir).at(&entry.dir) {
+        match common::remove_path(&entry.dir).at(&entry.dir) {
             Ok(()) => removed += 1,
             Err(e) => {
                 common::warn(e);
@@ -241,10 +259,29 @@ fn entries(dump: &Path) -> common::Result<Vec<Entry>> {
     Ok(found)
 }
 
+/// True for `.`, `..` and anything ending in them, like `src/..`. Deleting
+/// those would take the current or parent directory with it.
+fn is_dot(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_bytes();
+    let trimmed = bytes.strip_suffix(b"/").unwrap_or(bytes);
+    let last = trimmed.rsplit(|&b| b == b'/').next().unwrap_or(trimmed);
+    last == b"." || last == b".."
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 { "entry" } else { "entries" }
 }
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+#[test]
+fn dots() {
+    for p in [".", "..", "./", "../", "a/.", "a/..", "/tmp/.."] {
+        assert!(is_dot(Path::new(p)), "{p}");
+    }
+    for p in ["a", ".hidden", "..x", "a/.b", "/"] {
+        assert!(!is_dot(Path::new(p)), "{p}");
+    }
 }
