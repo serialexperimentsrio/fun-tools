@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{self, PathBuf};
 use std::process::ExitCode;
 
@@ -67,8 +67,15 @@ fn main() -> ExitCode {
             Some(Action::Idx) => {
                 let color = common::color();
                 let mut out = io::stdout().lock();
+                let terminal = out.is_terminal();
                 for path in &selected {
-                    let shown = path.display().to_string();
+                    if !terminal {
+                        // Exact paths only, so scripts can use them as they are.
+                        common::write_path(&mut out, path, false)?;
+                        writeln!(out)?;
+                        continue;
+                    }
+                    let shown = common::escaped(path.as_os_str());
                     // Something moved or deleted it since it was selected.
                     if fs::symlink_metadata(path).is_err() {
                         writeln!(out, "{}", paint(&format!("{shown} (missing)"), common::RED, color))?;

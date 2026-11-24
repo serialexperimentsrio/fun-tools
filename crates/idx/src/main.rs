@@ -1,7 +1,9 @@
 use std::cmp::Reverse;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs::{self, Metadata};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, IsTerminal, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -69,6 +71,7 @@ struct Lister<'a> {
     cli: &'a Cli,
     out: BufWriter<io::StdoutLock<'static>>,
     color: bool,
+    terminal: bool,
     json: Vec<Value>,
     ok: bool,
 }
@@ -83,6 +86,7 @@ fn main() -> ExitCode {
             cli: &cli,
             out: BufWriter::new(io::stdout().lock()),
             color: common::color(),
+            terminal: io::stdout().is_terminal(),
             json: Vec::new(),
             ok: true,
         };
@@ -189,9 +193,9 @@ impl Lister<'_> {
             return Ok(());
         }
 
-        let mut name = entry.name.to_string_lossy().into_owned();
+        let mut name = self.name_bytes(&entry.name);
         let code = if meta.is_dir() {
-            name.push('/');
+            name.push(b'/');
             common::BLUE
         } else if meta.is_symlink() {
             common::CYAN
@@ -200,10 +204,15 @@ impl Lister<'_> {
         } else {
             ""
         };
-        let mut line = if code.is_empty() { name } else { paint(&name, code, self.color) };
+        let mut line = if code.is_empty() || !self.color {
+            name
+        } else {
+            paint(&String::from_utf8_lossy(&name), code, true).into_bytes()
+        };
         if meta.is_symlink() {
             if let Ok(target) = fs::read_link(&entry.path) {
-                line.push_str(&format!(" -> {}", target.display()));
+                line.extend_from_slice(b" -> ");
+                line.extend_from_slice(&self.name_bytes(target.as_os_str()));
             }
         }
 
@@ -213,8 +222,16 @@ impl Lister<'_> {
             let info = format!("{} {size:>9}  {time}", permissions(meta));
             write!(self.out, "{}  ", paint(&info, common::DIM, self.color))?;
         }
-        writeln!(self.out, "{prefix}{line}")?;
+        self.out.write_all(prefix.as_bytes())?;
+        self.out.write_all(&line)?;
+        writeln!(self.out)?;
         Ok(())
+    }
+
+    /// Escaped for a terminal, exact bytes for a pipe, so a script reading
+    /// `idx` output gets names it can actually open.
+    fn name_bytes(&self, name: &OsStr) -> Vec<u8> {
+        if self.terminal { common::escaped(name).into_bytes() } else { name.as_bytes().to_vec() }
     }
 }
 
