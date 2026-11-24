@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,8 @@ fn main() -> ExitCode {
         };
         let wait = Duration::try_from_secs_f64(secs).map_err(|_| "--watch needs a positive number")?;
         loop {
-            if !cli.json {
+            // Clearing only makes sense on a terminal; in a log it's noise.
+            if !cli.json && io::stdout().is_terminal() {
                 print!("\x1b[H\x1b[2J");
             }
             report(&cli)?;
