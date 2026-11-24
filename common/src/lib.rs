@@ -205,11 +205,7 @@ pub fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Deletes a file, symlink or directory tree.
 pub fn remove_path(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
+    if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
 /// Whether to print colors: only on a terminal, and never with NO_COLOR set.
@@ -227,11 +223,21 @@ pub const CYAN: &str = "36";
 
 /// Wraps text in an ANSI color when `on` is set.
 pub fn paint(text: &str, code: &str, on: bool) -> String {
-    if on {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_string()
-    }
+    if on { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+}
+
+/// `/proc/meminfo` as a map of field name to bytes.
+pub fn meminfo() -> Result<std::collections::HashMap<String, u64>> {
+    let path = Path::new("/proc/meminfo");
+    let text = fs::read_to_string(path).at(path)?;
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let (key, rest) = line.split_once(':')?;
+            let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            Some((key.to_string(), kib * 1024))
+        })
+        .collect())
 }
 
 /// 1536 -> "1.5 KiB".
@@ -243,11 +249,7 @@ pub fn human_size(bytes: u64) -> String {
         size /= 1024.0;
         unit += 1;
     }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{size:.1} {}", UNITS[unit])
-    }
+    if unit == 0 { format!("{bytes} B") } else { format!("{size:.1} {}", UNITS[unit]) }
 }
 
 #[cfg(test)]
