@@ -1,0 +1,10 @@
+[package]
+name = "put"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arboard.workspace = true
+clap.workspace = true
+common.workspace = true

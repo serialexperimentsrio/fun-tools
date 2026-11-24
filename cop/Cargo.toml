@@ -1,6 +1,11 @@
 [package]
 name = "cop"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+arboard.workspace = true
+clap.workspace = true
+common.workspace = true
+libc.workspace = true
