@@ -118,8 +118,8 @@ pub fn full_path(path: &Path) -> io::Result<PathBuf> {
 /// Reads a list of paths stored one per line. A missing file is an empty list.
 pub fn read_paths(file: &Path) -> Result<Vec<PathBuf>> {
     match fs::read(file) {
-        // ponytail: newline-separated, so a file name containing a newline
-        // breaks it. Switch to NUL separators if that ever matters.
+        // Newline-separated, so a file name that contains a newline won't
+        // survive the round trip. NUL separators would fix that if it matters.
         Ok(bytes) => Ok(bytes
             .split(|&b| b == b'\n')
             .filter(|line| !line.is_empty())
@@ -203,6 +203,25 @@ pub fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+/// Runs `make`, which creates `target`, after moving anything already at
+/// `target` out of the way. The old one is deleted only once `make` worked,
+/// and put back if it failed, so a failed replace never loses data.
+pub fn replace(target: &Path, make: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    if fs::symlink_metadata(target).is_err() {
+        return make();
+    }
+    let name = target.file_name().unwrap_or(target.as_os_str()).to_string_lossy();
+    let aside = target.with_file_name(format!(".{name}.fun-tools-old"));
+    fs::rename(target, &aside)?;
+    match make() {
+        Ok(()) => remove_path(&aside),
+        Err(e) => {
+            let _ = fs::rename(&aside, target);
+            Err(e)
+        }
+    }
+}
+
 /// Deletes a file, symlink or directory tree.
 pub fn remove_path(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
@@ -237,9 +256,6 @@ pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
         if !how.force {
             return Err(format!("{}: already exists (use -f to replace it)", target.display()).into());
         }
-        if !how.dry_run {
-            remove_path(&target).at(&target)?;
-        }
     }
 
     if how.dry_run {
@@ -247,7 +263,7 @@ pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
         println!("would {verb} {} -> {}", src.display(), target.display());
         return Ok(());
     }
-    if how.cut { move_path(src, &target).at(src) } else { copy_path(src, &target).at(src) }
+    replace(&target, || if how.cut { move_path(src, &target) } else { copy_path(src, &target) }).at(src)
 }
 
 /// Whether to print colors: only on a terminal, and never with NO_COLOR set.
@@ -329,5 +345,24 @@ mod tests {
         assert!(root.join("c/sub/file").exists());
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn replace_restores_on_failure() {
+        let dir = env::temp_dir().join(format!("fun-tools-replace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("t");
+        fs::write(&target, "old").unwrap();
+
+        let failed = replace(&target, || Err(io::Error::other("nope")));
+        assert!(failed.is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "old");
+
+        replace(&target, || fs::write(&target, "new")).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "nothing left over");
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

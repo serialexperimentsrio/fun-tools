@@ -164,16 +164,13 @@ fn restore(dump: &Path, ids: &[u64], force: bool) -> common::Result {
         let result = (|| -> common::Result {
             let entry = all.iter().find(|e| e.id == *id).ok_or_else(|| format!("{id}: no such entry"))?;
             let origin = &entry.origin;
-            if fs::symlink_metadata(origin).is_ok() {
-                if !force {
-                    return Err(format!("{}: already exists (use -f to replace it)", origin.display()).into());
-                }
-                common::remove_path(origin).at(origin)?;
+            if !force && fs::symlink_metadata(origin).is_ok() {
+                return Err(format!("{}: already exists (use -f to replace it)", origin.display()).into());
             }
             if let Some(parent) = origin.parent() {
                 fs::create_dir_all(parent).at(parent)?;
             }
-            common::move_path(&entry.dir.join("data"), origin).at(origin)?;
+            common::replace(origin, || common::move_path(&entry.dir.join("data"), origin)).at(origin)?;
             fs::remove_dir_all(&entry.dir).at(&entry.dir)
         })();
         if let Err(e) = result {

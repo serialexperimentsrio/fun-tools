@@ -262,8 +262,8 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
     // Keyed by the numbers statvfs reports, which also catches the same
     // filesystem mounted twice (bind mounts, or WSL showing C: at both /mnt/c
     // and /usr/lib/wsl/drivers). The shortest mount point wins.
-    // ponytail: two different, identically sized and filled filesystems would
-    // collapse into one row. Unlikely enough to ignore for now.
+    // Two different filesystems with exactly the same size and usage would
+    // collapse into one row, which is unlikely enough to live with.
     let mut found: HashMap<(u64, u64, u64), (PathBuf, u64, u64)> = HashMap::new();
     for line in mounts.lines() {
         let mut parts = line.split_whitespace();

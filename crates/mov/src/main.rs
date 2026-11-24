@@ -89,16 +89,11 @@ fn move_one(src: &Path, target: &Path, cli: &Cli) -> common::Result {
         if !cli.force {
             return Err(format!("{}: already exists (use -f to replace it)", target.display()).into());
         }
-        if !cli.dry_run {
-            // ponytail: the old target is gone before the move runs, so a failed
-            // move loses it. Rename it aside first if that ever bites.
-            common::remove_path(target).at(target)?;
-        }
     }
 
     if cli.dry_run {
         println!("{} -> {}", src.display(), target.display());
         return Ok(());
     }
-    common::move_path(src, target).at(src)
+    common::replace(target, || common::move_path(src, target)).at(src)
 }
