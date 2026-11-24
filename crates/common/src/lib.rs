@@ -173,33 +173,62 @@ pub mod selection {
 }
 
 /// Renames `from` to `to`, copying and deleting when they sit on
-/// different filesystems.
+/// different filesystems. If the copy fails halfway, the partial copy is
+/// removed and the source is left as it was.
 pub fn move_path(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
-            copy_path(from, to)?;
+            if let Err(e) = copy_path(from, to) {
+                let _ = remove_path(to);
+                return Err(e);
+            }
             remove_path(from)
         }
         other => other,
     }
 }
 
-/// Copies a file, symlink or whole directory tree. Symlinks are copied as
-/// links, not followed.
+/// Copies a file, symlink or whole directory tree, keeping permissions and
+/// modification times. Symlinks are copied as links, not followed. FIFOs,
+/// sockets and device files are refused: reading a FIFO would block forever.
 pub fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(from)?;
-    if meta.is_symlink() {
+    let kind = meta.file_type();
+    if kind.is_symlink() {
         std::os::unix::fs::symlink(fs::read_link(from)?, to)
-    } else if meta.is_dir() {
+    } else if kind.is_dir() {
         fs::create_dir(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
             copy_path(&entry.path(), &to.join(entry.file_name()))?;
         }
-        // Set this last, a read-only directory would refuse its own children.
+        // Both last: adding children changes the time, and a read-only
+        // directory would refuse them.
+        keep_modified(to, &meta)?;
         fs::set_permissions(to, meta.permissions())
+    } else if kind.is_file() {
+        fs::copy(from, to)?;
+        keep_modified(to, &meta)
     } else {
-        fs::copy(from, to).map(drop)
+        Err(io::Error::new(io::ErrorKind::Unsupported, "can't copy a special file (FIFO, socket or device)"))
+    }
+}
+
+fn keep_modified(path: &Path, meta: &fs::Metadata) -> io::Result<()> {
+    match meta.modified() {
+        Ok(time) => fs::File::open(path)?.set_modified(time),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Whether two paths are the same file on disk (same device and inode),
+/// following symlinks. Catches hard links and, on case-insensitive drives
+/// like WSL's /mnt/c, the same name in a different case.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
     }
 }
 
@@ -211,7 +240,8 @@ pub fn replace(target: &Path, make: impl FnOnce() -> io::Result<()>) -> io::Resu
         return make();
     }
     let name = target.file_name().unwrap_or(target.as_os_str()).to_string_lossy();
-    let aside = target.with_file_name(format!(".{name}.fun-tools-old"));
+    // The pid keeps this from colliding with a leftover from a crashed run.
+    let aside = target.with_file_name(format!(".{name}.fun-tools-old-{}", std::process::id()));
     fs::rename(target, &aside)?;
     match make() {
         Ok(()) => remove_path(&aside),
@@ -222,9 +252,34 @@ pub fn replace(target: &Path, make: impl FnOnce() -> io::Result<()>) -> io::Resu
     }
 }
 
-/// Deletes a file, symlink or directory tree.
+/// Deletes a file, symlink or directory tree. Read-only directories inside
+/// the tree (common in build caches) are made writable first, since a
+/// directory has to be writable for its contents to be removed.
 pub fn remove_path(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
+    if !fs::symlink_metadata(path)?.is_dir() {
+        return fs::remove_file(path);
+    }
+    match fs::remove_dir_all(path) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            make_writable(path)?;
+            fs::remove_dir_all(path)
+        }
+        other => other,
+    }
+}
+
+fn make_writable(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::symlink_metadata(dir)?.permissions();
+    perms.set_mode(perms.mode() | 0o700);
+    fs::set_permissions(dir, perms)?;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            make_writable(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Options for [`place_into`].
@@ -250,7 +305,7 @@ pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
     let target = dir.join(name);
     if fs::symlink_metadata(&target).is_ok() {
         // Without this, -f would delete the source before copying it onto itself.
-        if fs::canonicalize(&target).ok() == Some(src_real) {
+        if same_file(&target, src) {
             return Err(format!("{}: already there", target.display()).into());
         }
         if !how.force {
@@ -264,6 +319,26 @@ pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
         return Ok(());
     }
     replace(&target, || if how.cut { move_path(src, &target) } else { copy_path(src, &target) }).at(src)
+}
+
+/// A name made safe for a terminal: control characters are shown escaped, so
+/// a file called `\e[2J` can't clear the screen, and invalid UTF-8 is
+/// replaced. Use it only for terminal output; pipes should get the real bytes.
+pub fn escaped(name: &OsStr) -> String {
+    let text = name.to_string_lossy();
+    if !text.chars().any(char::is_control) {
+        return text.into_owned();
+    }
+    text.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
+}
+
+/// Writes a path for the reader: escaped on a terminal, raw bytes otherwise.
+pub fn write_path(out: &mut impl io::Write, path: &Path, terminal: bool) -> io::Result<()> {
+    if terminal {
+        out.write_all(escaped(path.as_os_str()).as_bytes())
+    } else {
+        out.write_all(path.as_os_str().as_bytes())
+    }
 }
 
 /// Whether to print colors: only on a terminal, and never with NO_COLOR set.
@@ -343,6 +418,41 @@ mod tests {
         move_path(&root.join("b"), &root.join("c")).unwrap();
         assert!(!root.join("b").exists());
         assert!(root.join("c/sub/file").exists());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn escapes_control_characters() {
+        assert_eq!(escaped(OsStr::new("plain.txt")), "plain.txt");
+        assert_eq!(escaped(OsStr::new("evil\x1b[2J\nname")), "evil\\u{1b}[2J\\nname");
+        assert_eq!(escaped(OsStr::from_bytes(b"bad\xffbyte")), "bad\u{fffd}byte");
+    }
+
+    #[test]
+    fn copies_keep_times_and_refuse_fifos() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = env::temp_dir().join(format!("fun-tools-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/ro")).unwrap();
+        fs::write(root.join("src/f"), "x").unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        fs::File::open(root.join("src/f")).unwrap().set_modified(old).unwrap();
+
+        copy_path(&root.join("src"), &root.join("dst")).unwrap();
+        assert_eq!(fs::metadata(root.join("dst/f")).unwrap().modified().unwrap(), old);
+
+        let fifo = root.join("fifo");
+        let status = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(status.success());
+        let err = copy_path(&fifo, &root.join("fifo2")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+
+        // A read-only directory inside a tree must not stop removal.
+        fs::write(root.join("src/ro/inner"), "x").unwrap();
+        fs::set_permissions(root.join("src/ro"), fs::Permissions::from_mode(0o500)).unwrap();
+        remove_path(&root.join("src")).unwrap();
+        assert!(!root.join("src").exists());
 
         fs::remove_dir_all(&root).unwrap();
     }
