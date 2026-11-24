@@ -1,7 +1,14 @@
+<p align="center">
+  <img src="Fun%20Tools.png" alt="Fun Tools logo" width="600">
+</p>
+
 <h1 align="center">Fun Tools</h1>
 
 <p align="center">
-  <img src="Fun%20Tools.png" alt="Fun Tools logo">
+  <a href="https://github.com/serialexperimentsrio/fun-tools/actions/workflows/ci.yml"><img src="https://github.com/serialexperimentsrio/fun-tools/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white" alt="Platform: Linux">
 </p>
 
 **Fun Tools** is a set of small file, text and system tools for Linux, written in Rust. The long-term goal is a friendlier replacement for GNU coreutils: safe by default, consistent flags across every tool, readable output, and `--json` where it makes sense.
