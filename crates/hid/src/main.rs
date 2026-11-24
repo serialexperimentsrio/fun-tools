@@ -38,7 +38,17 @@ enum Field {
 fn main() -> ExitCode {
     common::run(|| {
         let cli = Cli::parse();
-        let fields = if cli.only.is_empty() { Field::value_variants().to_vec() } else { cli.only };
+        let mut fields = if cli.only.is_empty() { Field::value_variants().to_vec() } else { cli.only };
+        // `-o cpu,cpu` shows cpu once; the first mention sets the order.
+        let mut seen = Vec::new();
+        fields.retain(|f| {
+            if seen.contains(f) {
+                false
+            } else {
+                seen.push(*f);
+                true
+            }
+        });
         let mut out = io::stdout().lock();
 
         if cli.json {
