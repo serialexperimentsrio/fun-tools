@@ -159,7 +159,7 @@ pub mod selection {
     pub fn require() -> Result<Vec<PathBuf>> {
         let paths = load()?;
         if paths.is_empty() {
-            return Err("nothing is selected (add paths with `sel add`)".into());
+            return Err("nothing is selected (pick paths with `sel <path>...`)".into());
         }
         Ok(paths)
     }

@@ -6,21 +6,22 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use common::{At, paint, selection};
 
-/// Keep a list of selected files and directories for `cop`, `mov` and `del` to act on.
+/// Keep a list of selected files and directories for `cop`, `mov` and `del`
+/// to act on. `sel a.txt b/` adds to it. To select a file named like one of
+/// the subcommands, write it as a path: `sel ./idx`.
 #[derive(Parser)]
-#[command(version)]
+#[command(version, args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 struct Cli {
     #[command(subcommand)]
-    action: Action,
+    action: Option<Action>,
+
+    /// Files and directories to add to the selection
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
 }
 
 #[derive(Subcommand)]
 enum Action {
-    /// Add paths to the selection
-    Add {
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-    },
     /// Take paths out of the selection (the files themselves stay put)
     Mop {
         #[arg(required = true)]
@@ -40,8 +41,8 @@ fn main() -> ExitCode {
         let mut ok = true;
 
         match cli.action {
-            Action::Add { paths } => {
-                for path in paths {
+            None => {
+                for path in cli.paths {
                     match fs::symlink_metadata(&path).and_then(|_| common::full_path(&path)).at(&path) {
                         Ok(abs) if !selected.contains(&abs) => selected.push(abs),
                         Ok(_) => {}
@@ -53,7 +54,7 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
-            Action::Mop { paths } => {
+            Some(Action::Mop { paths }) => {
                 for path in paths {
                     // The path may be gone already, so fall back to a plain absolute path.
                     let abs = common::full_path(&path).or_else(|_| path::absolute(&path)).at(&path)?;
@@ -66,7 +67,7 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
-            Action::Idx => {
+            Some(Action::Idx) => {
                 let color = common::color();
                 let mut out = io::stdout().lock();
                 for path in &selected {
@@ -79,7 +80,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            Action::Clear => selection::save(&[])?,
+            Some(Action::Clear) => selection::save(&[])?,
         }
         common::finish(ok)
     })

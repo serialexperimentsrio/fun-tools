@@ -19,7 +19,7 @@
 |------|--------------|
 | `cop` | Copy files, directories, piped text or lines of a file to the system clipboard |
 | `put` | Paste from the clipboard: files into a directory, text to stdout, a new file, or into a file at a line |
-| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on: `sel add`, `sel mop`, `sel idx`, `sel clear` |
+| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on: `sel <paths>` adds; `sel mop`, `sel idx`, `sel clear` manage it |
 | `mov` | Move or rename files and directories |
 | `del` | Delete safely: `del file` goes to a dump; `del idx`, `del restore`, `del empty` manage it |
 | `new` | Create files or directories, including missing parents |
@@ -39,7 +39,7 @@ Every tool except `ted` has `--help`. Wherever a subcommand is called `idx`, `in
 ## Examples
 
 ```sh
-sel add *.log old/           # pick some paths
+sel *.log old/               # pick some paths
 sel mop old/                 # changed my mind about one (the folder stays put)
 sel idx                      # what's selected
 del -s                       # dump everything selected
@@ -71,7 +71,7 @@ hid -o os,cpu,ram --json
 
 ## How the flags work
 
-A tool that does one thing has no subcommands: `dog file.txt`. A tool that does several things takes the action as a subcommand: `sel add`, `sel mop`. `del` is the one mix of both: plain paths are deleted, and `del idx`, `del restore` and `del empty` look after the dump.
+A tool that does one thing has no subcommands: `dog file.txt`. A tool that does several things takes the action as a subcommand: `del restore`, `sel mop`. In `del` and `sel` the main action needs no subcommand: `del file` deletes and `sel file` selects, while the subcommands look after the dump and the selection. A file named like a subcommand is written as a path, e.g. `del ./idx`.
 
 Flags change how the action behaves. These shared ones mean the same thing in every tool that has them:
 
