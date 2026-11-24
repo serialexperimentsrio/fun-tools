@@ -105,6 +105,16 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Absolute path with `.` and `..` resolved. Unlike `canonicalize`, a symlink
+/// at the end stays a symlink, so selecting a link selects the link itself.
+pub fn full_path(path: &Path) -> io::Result<PathBuf> {
+    let abs = std::path::absolute(path)?;
+    match (abs.parent(), abs.file_name()) {
+        (Some(parent), Some(name)) => Ok(fs::canonicalize(parent)?.join(name)),
+        _ => fs::canonicalize(abs),
+    }
+}
+
 /// The list of paths picked with `sel`, one absolute path per line.
 pub mod selection {
     use super::*;
