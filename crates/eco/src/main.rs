@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -25,7 +25,9 @@ fn main() -> ExitCode {
         let cli = Cli::parse();
         let mut out = io::stdout().lock();
 
-        if cli.text.is_empty() {
+        // With no text, pass piped input through. On a terminal there's
+        // nothing to pass, so behave like a plain `eco` with an empty line.
+        if cli.text.is_empty() && !io::stdin().is_terminal() {
             io::copy(&mut io::stdin().lock(), &mut out)?;
             return Ok(());
         }
