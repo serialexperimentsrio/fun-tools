@@ -1,10 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread::sleep;
@@ -260,8 +259,12 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
         "tracefs",
     ];
     let mounts = fs::read_to_string("/proc/mounts")?;
-    let mut seen = HashSet::new();
-    let mut found = Vec::new();
+    // Keyed by the numbers statvfs reports, which also catches the same
+    // filesystem mounted twice (bind mounts, or WSL showing C: at both /mnt/c
+    // and /usr/lib/wsl/drivers). The shortest mount point wins.
+    // ponytail: two different, identically sized and filled filesystems would
+    // collapse into one row. Unlikely enough to ignore for now.
+    let mut found: HashMap<(u64, u64, u64), (PathBuf, u64, u64)> = HashMap::new();
     for line in mounts.lines() {
         let mut parts = line.split_whitespace();
         let (Some(_device), Some(mount), Some(kind)) = (parts.next(), parts.next(), parts.next()) else {
@@ -271,9 +274,8 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
             continue;
         }
         let mount = PathBuf::from(unescape(mount));
-        // The same filesystem often shows up at several mount points (bind mounts).
-        let Ok(meta) = fs::metadata(&mount) else { continue };
-        if !seen.insert(meta.dev()) {
+        // Single files can be mount points too (WSL's /init); they aren't disks.
+        if !mount.is_dir() {
             continue;
         }
         let Some(st) = statvfs(&mount) else { continue };
@@ -282,8 +284,17 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
         if total == 0 {
             continue;
         }
-        found.push((mount, (st.f_blocks - st.f_bfree) * block, total));
+        let row = (mount, (st.f_blocks - st.f_bfree) * block, total);
+        let key = (st.f_blocks, st.f_bfree, st.f_files);
+        match found.get(&key) {
+            Some((kept, _, _)) if kept.as_os_str().len() <= row.0.as_os_str().len() => {}
+            _ => {
+                found.insert(key, row);
+            }
+        }
     }
+    let mut found: Vec<_> = found.into_values().collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(found)
 }
 
