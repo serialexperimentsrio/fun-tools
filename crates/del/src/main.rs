@@ -10,30 +10,30 @@ use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use common::{At, paint, selection};
 
-/// Delete files and directories safely. Everything goes to a dump first and
-/// can be restored until the dump is emptied.
+/// Delete files and directories safely. They go to a dump first and can be
+/// restored until the dump is emptied. To delete a file named like one of
+/// the subcommands, write it as a path: `del ./ls`.
 #[derive(Parser)]
-#[command(version)]
+#[command(version, args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 struct Cli {
     #[command(subcommand)]
-    action: Action,
+    action: Option<Action>,
+
+    /// Files and directories to delete
+    #[arg(required_unless_present = "selected", conflicts_with = "selected")]
+    paths: Vec<PathBuf>,
+
+    /// Delete the selected paths (see `sel`)
+    #[arg(short, long)]
+    selected: bool,
+
+    /// Show what would be deleted without touching anything
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Subcommand)]
 enum Action {
-    /// Move paths to the dump
-    Add {
-        #[arg(required_unless_present = "selected", conflicts_with = "selected")]
-        paths: Vec<PathBuf>,
-
-        /// Dump the selected paths (see `sel`)
-        #[arg(short, long)]
-        selected: bool,
-
-        /// Show what would be dumped without touching anything
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// List what's in the dump
     Ls,
     /// Put dumped entries back where they came from
@@ -78,13 +78,13 @@ fn main() -> ExitCode {
         fs::create_dir_all(&dump).at(&dump)?;
 
         match cli.action {
-            Action::Add { paths, selected, dry_run } => {
-                let paths = if selected { selection::require()? } else { paths };
-                add(&dump, &paths, selected, dry_run)
+            Some(Action::Ls) => list(&dump),
+            Some(Action::Restore { ids, force }) => restore(&dump, &ids, force),
+            Some(Action::Empty { older_than, dry_run, yes }) => empty(&dump, older_than, dry_run, yes),
+            None => {
+                let paths = if cli.selected { selection::require()? } else { cli.paths };
+                add(&dump, &paths, cli.selected, cli.dry_run)
             }
-            Action::Ls => list(&dump),
-            Action::Restore { ids, force } => restore(&dump, &ids, force),
-            Action::Empty { older_than, dry_run, yes } => empty(&dump, older_than, dry_run, yes),
         }
     })
 }
