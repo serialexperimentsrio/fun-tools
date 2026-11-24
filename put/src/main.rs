@@ -1,11 +1,11 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use arboard::{Clipboard, Error as ClipError};
 use clap::Parser;
-use common::At;
+use common::{At, Place};
 
 /// Paste from the system clipboard. Copied files and directories land in
 /// DEST; copied text goes to stdout, or into DEST if one is given.
@@ -73,50 +73,24 @@ fn paste_files(cli: &Cli, paths: &[PathBuf], clipboard: &mut Clipboard) -> commo
     if !dest.is_dir() {
         return Err(format!("{}: not a directory", dest.display()).into());
     }
-    let dest_real = fs::canonicalize(&dest).at(&dest)?;
 
     // `cop -x` leaves the list it cut behind; if it still matches what's on
     // the clipboard, this paste is a move.
     let cut_file = common::data_dir()?.join("cut");
-    let cut = common::read_paths(&cut_file)? == paths;
+    let how = Place { cut: common::read_paths(&cut_file)? == paths, force: cli.force, dry_run: cli.dry_run };
 
     let mut ok = true;
     for src in paths {
-        if let Err(e) = paste_one(cli, src, &dest, &dest_real, cut) {
+        if let Err(e) = common::place_into(src, &dest, &how) {
             common::warn(e);
             ok = false;
         }
     }
 
     // A cut can only be pasted once.
-    if cut && ok && !cli.dry_run {
+    if how.cut && ok && !cli.dry_run {
         fs::remove_file(&cut_file).at(&cut_file)?;
         clipboard.clear()?;
     }
     common::finish(ok)
-}
-
-fn paste_one(cli: &Cli, src: &Path, dest: &Path, dest_real: &Path, cut: bool) -> common::Result {
-    let name = src.file_name().ok_or_else(|| format!("{}: can't paste that", src.display()))?;
-    fs::symlink_metadata(src).at(src)?;
-    if dest_real.starts_with(fs::canonicalize(src).at(src)?) {
-        return Err(format!("{}: can't paste a directory into itself", src.display()).into());
-    }
-
-    let target = dest.join(name);
-    if fs::symlink_metadata(&target).is_ok() {
-        if !cli.force {
-            return Err(format!("{}: already exists (use -f to replace it)", target.display()).into());
-        }
-        if !cli.dry_run {
-            common::remove_path(&target).at(&target)?;
-        }
-    }
-
-    if cli.dry_run {
-        let verb = if cut { "move" } else { "copy" };
-        println!("would {verb} {} -> {}", src.display(), target.display());
-        return Ok(());
-    }
-    if cut { common::move_path(src, &target).at(src) } else { common::copy_path(src, &target).at(src) }
 }

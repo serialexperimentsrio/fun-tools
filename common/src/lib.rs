@@ -208,6 +208,48 @@ pub fn remove_path(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }
 }
 
+/// Options for [`place_into`].
+pub struct Place {
+    /// Move instead of copy.
+    pub cut: bool,
+    /// Replace what's already at the target.
+    pub force: bool,
+    /// Print what would happen and stop there.
+    pub dry_run: bool,
+}
+
+/// Copies or moves `src` into the directory `dir`, keeping its name. Used by
+/// `put` and `cop --to`, so pasting behaves the same either way.
+pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
+    let name = src.file_name().ok_or_else(|| format!("{}: can't copy that", src.display()))?;
+    fs::symlink_metadata(src).at(src)?;
+    let src_real = fs::canonicalize(src).at(src)?;
+    if fs::canonicalize(dir).at(dir)?.starts_with(&src_real) {
+        return Err(format!("{}: can't put a directory inside itself", src.display()).into());
+    }
+
+    let target = dir.join(name);
+    if fs::symlink_metadata(&target).is_ok() {
+        // Without this, -f would delete the source before copying it onto itself.
+        if fs::canonicalize(&target).ok() == Some(src_real) {
+            return Err(format!("{}: already there", target.display()).into());
+        }
+        if !how.force {
+            return Err(format!("{}: already exists (use -f to replace it)", target.display()).into());
+        }
+        if !how.dry_run {
+            remove_path(&target).at(&target)?;
+        }
+    }
+
+    if how.dry_run {
+        let verb = if how.cut { "move" } else { "copy" };
+        println!("would {verb} {} -> {}", src.display(), target.display());
+        return Ok(());
+    }
+    if how.cut { move_path(src, &target).at(src) } else { copy_path(src, &target).at(src) }
+}
+
 /// Whether to print colors: only on a terminal, and never with NO_COLOR set.
 pub fn color() -> bool {
     io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())

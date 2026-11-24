@@ -4,16 +4,17 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
 use arboard::{Clipboard, SetExtLinux};
 use clap::Parser;
-use common::{At, selection};
+use common::{At, Place, selection};
 
-/// Copy files, directories or piped text to the system clipboard.
+/// Copy files, directories or piped text to the system clipboard, then paste
+/// with `put`. With --to, copy straight into a directory instead.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -28,6 +29,18 @@ struct Cli {
     /// Cut instead of copy: the next `put` moves the paths
     #[arg(short = 'x', long)]
     cut: bool,
+
+    /// Copy straight into this directory, leaving the clipboard alone
+    #[arg(short, long, value_name = "DIR", conflicts_with = "cut")]
+    to: Option<PathBuf>,
+
+    /// With --to, replace anything already there
+    #[arg(short, long, requires = "to")]
+    force: bool,
+
+    /// With --to, show what would be copied without touching anything
+    #[arg(long, requires = "to")]
+    dry_run: bool,
 }
 
 /// Set in the environment of the background copy of `cop` that keeps the
@@ -45,6 +58,9 @@ fn main() -> ExitCode {
     }
     common::run(|| {
         let cli = Cli::parse();
+        if cli.to.is_some() && cli.paths.is_empty() && !cli.selected {
+            return Err("--to needs paths to copy".into());
+        }
         let payload = if cli.selected {
             Payload::Files(selection::require()?)
         } else if !cli.paths.is_empty() {
@@ -65,6 +81,10 @@ fn main() -> ExitCode {
             return Err("nothing to copy: give some paths or pipe in text".into());
         };
 
+        if let (Some(dir), Payload::Files(paths)) = (&cli.to, &payload) {
+            return copy_to(dir, paths, &cli);
+        }
+
         // Fail here, with a clear message, rather than in the background process.
         let mut clipboard = Clipboard::new().map_err(|e| format!("can't reach the clipboard: {e}"))?;
 
@@ -79,6 +99,21 @@ fn main() -> ExitCode {
 
         hand_off(&payload, &mut clipboard)
     })
+}
+
+fn copy_to(dir: &Path, paths: &[PathBuf], cli: &Cli) -> common::Result {
+    if !dir.is_dir() {
+        return Err(format!("{}: not a directory", dir.display()).into());
+    }
+    let how = Place { cut: false, force: cli.force, dry_run: cli.dry_run };
+    let mut ok = true;
+    for src in paths {
+        if let Err(e) = common::place_into(src, dir, &how) {
+            common::warn(e);
+            ok = false;
+        }
+    }
+    common::finish(ok)
 }
 
 /// X11 and Wayland don't store clipboard contents anywhere: the program that
