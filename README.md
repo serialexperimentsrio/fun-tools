@@ -79,8 +79,8 @@ cargo build --release
 cargo test
 
 # install one tool, or all of them
-cargo install --path dog
-for t in cop dat del dog eco hid idx loc mop mov new put sel usg; do cargo install --path $t; done
+cargo install --path crates/dog
+for t in cop dat del dog eco hid idx loc mop mov new put sel usg; do cargo install --path crates/$t; done
 ```
 
 `cop` and `put` need a graphical session (X11 or Wayland). Under WSL that's WSLg, and copied text also shows up in the Windows clipboard.

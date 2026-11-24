@@ -1,23 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-  "common",
-  "cop",
-  "dat",
-  "del",
-  "dog",
-  "eco",
-  "hid",
-  "idx",
-  "loc",
-  "mop",
-  "mov",
-  "new",
-  "put",
-  "sel",
-  "ted",
-  "usg",
-]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,6 +11,6 @@ rust-version = "1.85"
 arboard = "3.6"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
-common = { path = "common" }
+common = { path = "crates/common" }
 libc = "0.2"
 serde_json = "1"
