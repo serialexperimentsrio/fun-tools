@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -25,6 +26,10 @@ struct Cli {
     /// Only print the last N lines of each file
     #[arg(long, value_name = "N")]
     last: Option<usize>,
+
+    /// Print binary files to a terminal too, instead of skipping them
+    #[arg(long)]
+    binary: bool,
 }
 
 fn main() -> ExitCode {
@@ -38,12 +43,17 @@ fn main() -> ExitCode {
             return Ok(out.flush()?);
         }
 
+        let terminal = io::stdout().is_terminal();
+        // What stdout points at, if it's a regular file, to catch `dog a >> a`.
+        let output = fs::metadata("/proc/self/fd/1").ok().filter(|m| m.is_file()).map(|m| (m.dev(), m.ino()));
+
         let mut ok = true;
         for path in &cli.paths {
             let result = if path == Path::new("-") {
                 print(io::stdin().lock(), &mut out, &cli, &mut line_no).at(path)
             } else {
-                open(path).and_then(|f| print(f, &mut out, &cli, &mut line_no).at(path))
+                open(path, output, terminal && !cli.binary)
+                    .and_then(|f| print(f, &mut out, &cli, &mut line_no).at(path))
             };
             if let Err(e) = result {
                 if common::broken_pipe(&*e) {
@@ -59,12 +69,23 @@ fn main() -> ExitCode {
     })
 }
 
-fn open(path: &Path) -> common::Result<BufReader<File>> {
+fn open(path: &Path, output: Option<(u64, u64)>, skip_binary: bool) -> common::Result<BufReader<File>> {
     let file = File::open(path).at(path)?;
-    if file.metadata().at(path)?.is_dir() {
+    let meta = file.metadata().at(path)?;
+    if meta.is_dir() {
         return Err(format!("{}: is a directory", path.display()).into());
     }
-    Ok(BufReader::new(file))
+    // Reading a file while appending it to itself never ends.
+    if output == Some((meta.dev(), meta.ino())) && meta.len() > 0 {
+        return Err(format!("{}: input file is the output file", path.display()).into());
+    }
+    let mut reader = BufReader::new(file);
+    // Binary data on a terminal is garbage at best and can scramble its
+    // state at worst. A zero byte early on is the usual tell.
+    if skip_binary && reader.fill_buf().at(path)?.contains(&0) {
+        return Err(format!("{}: binary file, not shown (pipe it or use --binary)", path.display()).into());
+    }
+    Ok(reader)
 }
 
 /// Writes one input to `out`. `line_no` carries on across files.
