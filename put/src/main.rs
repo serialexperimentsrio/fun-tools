@@ -118,9 +118,5 @@ fn paste_one(cli: &Cli, src: &Path, dest: &Path, dest_real: &Path, cut: bool) ->
         println!("would {verb} {} -> {}", src.display(), target.display());
         return Ok(());
     }
-    if cut {
-        common::move_path(src, &target).at(src)
-    } else {
-        common::copy_path(src, &target).at(src)
-    }
+    if cut { common::move_path(src, &target).at(src) } else { common::copy_path(src, &target).at(src) }
 }

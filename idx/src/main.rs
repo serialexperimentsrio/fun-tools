@@ -170,7 +170,13 @@ impl Lister<'_> {
         let mode = meta.permissions().mode();
 
         if self.cli.json {
-            let kind = if meta.is_dir() { "dir" } else if meta.is_symlink() { "link" } else { "file" };
+            let kind = if meta.is_dir() {
+                "dir"
+            } else if meta.is_symlink() {
+                "link"
+            } else {
+                "file"
+            };
             let modified = entry.modified().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             self.json.push(json!({
                 "path": entry.path.to_string_lossy(),
@@ -214,7 +220,13 @@ impl Lister<'_> {
 
 /// `drwxr-xr-x` style string.
 fn permissions(meta: &Metadata) -> String {
-    let kind = if meta.is_dir() { 'd' } else if meta.is_symlink() { 'l' } else { '-' };
+    let kind = if meta.is_dir() {
+        'd'
+    } else if meta.is_symlink() {
+        'l'
+    } else {
+        '-'
+    };
     let mode = meta.permissions().mode();
     let mut s = String::from(kind);
     for shift in [6, 3, 0] {
