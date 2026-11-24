@@ -22,16 +22,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Take paths out of the selection (the files themselves stay put)
-    Mop {
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-    },
+    /// Take paths out of the selection, or empty it when no paths are given.
+    /// The files themselves stay put
+    Mop { paths: Vec<PathBuf> },
     /// List the selection
     #[command(visible_alias = "index")]
     Idx,
-    /// Empty the selection
-    Clear,
 }
 
 fn main() -> ExitCode {
@@ -54,6 +50,7 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
+            Some(Action::Mop { paths }) if paths.is_empty() => selection::save(&[])?,
             Some(Action::Mop { paths }) => {
                 for path in paths {
                     // The path may be gone already, so fall back to a plain absolute path.
@@ -80,7 +77,6 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            Some(Action::Clear) => selection::save(&[])?,
         }
         common::finish(ok)
     })

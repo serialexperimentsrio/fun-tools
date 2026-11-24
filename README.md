@@ -19,7 +19,7 @@
 |------|--------------|
 | `cop` | Copy files, directories, piped text or lines of a file to the system clipboard |
 | `put` | Paste from the clipboard: files into a directory, text to stdout, a new file, or into a file at a line |
-| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on: `sel <paths>` adds; `sel mop`, `sel idx`, `sel clear` manage it |
+| `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on: `sel <paths>` adds, `sel mop` takes out (all of it with no paths), `sel idx` lists |
 | `mov` | Move or rename files and directories |
 | `del` | Delete safely: `del file` goes to a dump; `del idx`, `del restore`, `del empty` manage it |
 | `new` | Create files or directories, including missing parents |
@@ -42,6 +42,7 @@ Every tool except `ted` has `--help`. Wherever a subcommand is called `idx`, `in
 sel *.log old/               # pick some paths
 sel mop old/                 # changed my mind about one (the folder stays put)
 sel idx                      # what's selected
+sel mop                      # start over: empty the selection
 del -s                       # dump everything selected
 
 del notes.txt build/         # delete straight away (to the dump)
