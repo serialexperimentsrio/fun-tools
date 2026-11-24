@@ -13,8 +13,9 @@ use arboard::{Clipboard, SetExtLinux};
 use clap::Parser;
 use common::{At, Place, selection};
 
-/// Copy files, directories or piped text to the system clipboard, then paste
-/// with `put`. With --to, copy straight into a directory instead.
+/// Copy files, directories or text to the system clipboard, then paste with
+/// `put`. Text can come from a pipe or from a file, whole or a range of lines.
+/// With --to, files are copied straight into a directory instead.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -41,6 +42,51 @@ struct Cli {
     /// With --to, show what would be copied without touching anything
     #[arg(long, requires = "to")]
     dry_run: bool,
+
+    /// Copy the file's text instead of the file itself
+    #[arg(short, long, conflicts_with_all = ["selected", "cut", "to"])]
+    content: bool,
+
+    /// Copy only these lines of the file's text: 5, 5-10 or 5- for the rest
+    #[arg(long, value_name = "RANGE", value_parser = parse_range, conflicts_with_all = ["selected", "cut", "to"])]
+    lines: Option<Lines>,
+}
+
+/// An inclusive, 1-based line range. `last` is None for "to the end".
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lines {
+    first: usize,
+    last: Option<usize>,
+}
+
+fn parse_range(s: &str) -> Result<Lines, String> {
+    let num = |t: &str| t.trim().parse::<usize>().ok().filter(|&n| n > 0).ok_or(format!("`{t}` isn't a line number"));
+    match s.split_once(['-', ':']) {
+        None => num(s).map(|n| Lines { first: n, last: Some(n) }),
+        Some((first, "")) => Ok(Lines { first: num(first)?, last: None }),
+        Some((first, last)) => {
+            let (first, last) = (num(first)?, num(last)?);
+            if last < first {
+                return Err(format!("{s} ends before it starts"));
+            }
+            Ok(Lines { first, last: Some(last) })
+        }
+    }
+}
+
+/// The text of a file, or just some of its lines.
+fn text_of(path: &Path, lines: Option<Lines>) -> common::Result<String> {
+    let text =
+        String::from_utf8(fs::read(path).at(path)?).map_err(|_| format!("{}: not a text file", path.display()))?;
+    let Some(range) = lines else {
+        return Ok(text);
+    };
+    let all: Vec<&str> = text.split_inclusive('\n').collect();
+    if range.first > all.len() {
+        return Err(format!("{}: only has {} lines", path.display(), all.len()).into());
+    }
+    let last = range.last.unwrap_or(all.len()).min(all.len());
+    Ok(all[range.first - 1..last].concat())
 }
 
 /// Set in the environment of the background copy of `cop` that keeps the
@@ -63,6 +109,11 @@ fn main() -> ExitCode {
         }
         let payload = if cli.selected {
             Payload::Files(selection::require()?)
+        } else if cli.content || cli.lines.is_some() {
+            let [path] = cli.paths.as_slice() else {
+                return Err("--content and --lines take exactly one file".into());
+            };
+            Payload::Text(text_of(path, cli.lines)?)
         } else if !cli.paths.is_empty() {
             let mut full = Vec::new();
             for path in &cli.paths {
@@ -185,4 +236,15 @@ fn serve() -> common::Result {
         _ => return Err("bad payload".into()),
     }
     Ok(())
+}
+
+#[test]
+fn ranges() {
+    assert_eq!(parse_range("5"), Ok(Lines { first: 5, last: Some(5) }));
+    assert_eq!(parse_range("5-10"), Ok(Lines { first: 5, last: Some(10) }));
+    assert_eq!(parse_range("5:10"), Ok(Lines { first: 5, last: Some(10) }));
+    assert_eq!(parse_range("5-"), Ok(Lines { first: 5, last: None }));
+    assert!(parse_range("0").is_err());
+    assert!(parse_range("10-5").is_err());
+    assert!(parse_range("x").is_err());
 }

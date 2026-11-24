@@ -10,8 +10,8 @@
 
 | Tool | What it does |
 |------|--------------|
-| `cop` | Copy files, directories or piped text to the system clipboard |
-| `put` | Paste from the clipboard: files into a directory, text to stdout or a file |
+| `cop` | Copy files, directories, piped text or lines of a file to the system clipboard |
+| `put` | Paste from the clipboard: files into a directory, text to stdout, a new file, or into a file at a line |
 | `sel` | Keep a selection of paths for `cop`, `mov` and `del` to act on |
 | `mov` | Move or rename files and directories |
 | `del` | Delete safely: everything goes to a dump and can be restored |
@@ -36,8 +36,14 @@ del add -s                   # dump them all
 del ls                       # see what's in the dump
 del restore 3                # changed my mind about one
 
+cop report.pdf && cd ~/docs && put      # copy here, paste there
+cop report.pdf --to ~/docs               # or in one go
 cop -x notes/ && cd ~/archive && put     # cut and paste a directory
 git diff | cop                           # copy text, paste anywhere
+
+cop --lines 10-20 main.rs                # copy lines 10 to 20 of a file
+put --at 5 other.rs                      # paste them in at line 5
+put --at end log.txt                     # or at the end (or --at start)
 
 idx -lr --depth 2            # two levels deep, with sizes and dates
 loc '*.rs' src -t file       # every Rust file under src
