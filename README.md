@@ -1,7 +1,7 @@
 # Fun Tools
 
 <p align="center">
-  <img src="Fun%20Tools.png" alt="Fun Tools logo" width="600">
+  <img src="fun.png" alt="Fun Tools logo" width="600">
 </p>
 
 <p align="center">
@@ -161,16 +161,18 @@ Every other short flag belongs to a single tool, so a letter never means two dif
 
 ## Installing
 
-You need Rust and a C toolchain for linking (`build-essential` on Debian and Ubuntu).
+You need Rust and a C toolchain for linking (`build-essential` on Debian and Ubuntu). All the tools come as one package, so they install, update and uninstall together:
 
 ```sh
-cargo build --release
-cargo test
-
-# install one tool, or all of them
-cargo install --path crates/dog
-for t in cop dat del dog eco hid idx loc mop mov nav new put sel ted usg; do cargo install --path crates/$t; done
+cargo install --git https://github.com/serialexperimentsrio/fun-tools   # straight from GitHub
+cargo install --path .                                                  # or from a clone; run it again to update
+cargo install --path . --bin dog                                        # just one tool
+cargo uninstall fun-tools                                               # remove them all
 ```
+
+If you installed the tools one by one before they became a single package, clear the old copies out first, once: `cargo uninstall cop dat del dog eco hid idx loc mop mov nav new put sel usg`.
+
+To work on the code, `cargo build` and `cargo test` cover everything.
 
 `nav` needs one line in your shell's startup file. A program can't change the directory of the shell that started it, so `nav` works out where to go and a small shell function does the actual `cd`:
 

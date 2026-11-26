@@ -1,6 +1,27 @@
+[package]
+name = "fun-tools"
+description = "Small file, text and system tools for Linux"
+repository = "https://github.com/serialexperimentsrio/fun-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Every tool is a program in src/bin/, so one `cargo install --path .`
+# installs all of them and `cargo uninstall fun-tools` removes them.
+[dependencies]
+arboard.workspace = true
+chrono.workspace = true
+clap.workspace = true
+common.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/common"]
+# A plain `cargo test` or `cargo build` covers common as well as the tools.
+default-members = [".", "crates/common"]
 
 [workspace.package]
 version = "0.1.0"
