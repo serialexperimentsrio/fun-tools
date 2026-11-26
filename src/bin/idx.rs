@@ -1,31 +1,39 @@
 use std::cmp::Reverse;
-use std::ffi::OsStr;
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{CStr, OsStr, OsString};
 use std::fs::{self, Metadata};
 use std::io::{self, BufWriter, IsTerminal, Write};
+use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, TimeZone};
 use clap::{Parser, ValueEnum};
 use common::{At, paint};
 use serde_json::{Value, json};
 
-/// List what's in a directory. Directories come first.
+/// List what's in a directory, directories first, or with --meta show
+/// everything about one file or directory.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Directory to list (defaults to the current one)
+    /// Directory to list, or with --meta the file or directory to describe
+    /// (defaults to the current one)
     path: Option<PathBuf>,
+
+    /// Show everything about PATH itself: its type, size (a directory's
+    /// total), permissions, owner, all its times, inode and links
+    #[arg(short, long, conflicts_with_all = ["long", "recursive", "depth", "sort"])]
+    meta: bool,
 
     /// Include hidden entries
     #[arg(short, long)]
     all: bool,
 
-    /// Show permissions, size and modification time
+    /// Show permissions, owner, size and modification time
     #[arg(short, long)]
     long: bool,
 
@@ -79,6 +87,8 @@ struct Lister<'a> {
     json: Vec<Value>,
     /// The drive the listing starts on; a tree doesn't leave it unless --cross-drives.
     root_dev: u64,
+    /// User names already looked up, by user id.
+    owners: HashMap<u32, String>,
     ok: bool,
 }
 
@@ -87,6 +97,9 @@ fn main() -> ExitCode {
         let cli = Cli::parse();
         let root = cli.path.clone().unwrap_or_else(|| PathBuf::from("."));
         let meta = fs::symlink_metadata(&root).at(&root)?;
+        if cli.meta {
+            return describe(&root, &meta, &cli);
+        }
 
         let mut lister = Lister {
             cli: &cli,
@@ -95,6 +108,7 @@ fn main() -> ExitCode {
             terminal: io::stdout().is_terminal(),
             json: Vec::new(),
             root_dev: meta.dev(),
+            owners: HashMap::new(),
             ok: true,
         };
 
@@ -184,6 +198,7 @@ impl Lister<'_> {
 
         if self.cli.json {
             let modified = entry.modified().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let owner = self.owner(meta.uid());
             self.json.push(json!({
                 "path": entry.path.to_string_lossy(),
                 "name": entry.name.to_string_lossy(),
@@ -191,6 +206,7 @@ impl Lister<'_> {
                 "size": meta.len(),
                 "modified": modified,
                 "mode": format!("{:o}", mode & 0o7777),
+                "owner": owner,
             }));
             return Ok(());
         }
@@ -221,7 +237,8 @@ impl Lister<'_> {
         if self.cli.long {
             let size = if meta.is_dir() { "-".to_string() } else { common::human_size(meta.len()) };
             let time = DateTime::<Local>::from(entry.modified()).format("%Y-%m-%d %H:%M");
-            let info = format!("{} {size:>9}  {time}", permissions(meta));
+            let owner = self.owner(meta.uid());
+            let info = format!("{} {owner:<8} {size:>9}  {time}", permissions(meta));
             write!(self.out, "{}  ", paint(&info, common::DIM, self.color))?;
         }
         self.out.write_all(prefix.as_bytes())?;
@@ -235,6 +252,159 @@ impl Lister<'_> {
     fn name_bytes(&self, name: &OsStr) -> Vec<u8> {
         if self.terminal { common::escaped(name).into_bytes() } else { name.as_bytes().to_vec() }
     }
+
+    fn owner(&mut self, uid: u32) -> String {
+        self.owners.entry(uid).or_insert_with(|| user_name(uid).unwrap_or_else(|| uid.to_string())).clone()
+    }
+}
+
+/// `idx --meta`: everything about one file or directory.
+fn describe(path: &Path, meta: &Metadata, cli: &Cli) -> common::Result {
+    let secs = |time: io::Result<SystemTime>| {
+        time.ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64)
+    };
+    let times = [
+        ("modified", secs(meta.modified())),
+        ("accessed", secs(meta.accessed())),
+        ("changed", Some(meta.ctime())),
+        // Not every filesystem records when a file was created.
+        ("created", secs(meta.created())),
+    ];
+    let (size, files, complete) = if meta.is_dir() {
+        let (bytes, files, complete) = total(path, meta.dev(), cli.cross_drives);
+        (bytes, Some(files), complete)
+    } else {
+        (meta.len(), None, true)
+    };
+    let (owner, group) = (user_name(meta.uid()), group_name(meta.gid()));
+    let target = if meta.is_symlink() { fs::read_link(path).ok() } else { None };
+    // metadata() follows the link, so it fails when the target is gone.
+    let target_exists = target.as_ref().map(|_| fs::metadata(path).is_ok());
+    let mode = meta.permissions().mode() & 0o7777;
+    let mut out = io::stdout().lock();
+
+    if cli.json {
+        let mut obj = json!({
+            "path": path.to_string_lossy(),
+            "type": common::kind(meta.file_type()),
+            "size": size,
+            "files": files,
+            "complete": complete,
+            "mode": format!("{mode:o}"),
+            "owner": owner,
+            "group": group,
+            "uid": meta.uid(),
+            "gid": meta.gid(),
+            "inode": meta.ino(),
+            "links": meta.nlink(),
+            "target": target.as_ref().map(|t| t.to_string_lossy()),
+            "target_exists": target_exists,
+        });
+        for (name, time) in times {
+            obj[name] = json!(time);
+        }
+        serde_json::to_writer_pretty(&mut out, &obj)?;
+        writeln!(out)?;
+        return Ok(());
+    }
+
+    let mut rows = vec![("type", common::kind(meta.file_type()).to_string())];
+    // The exact count only adds something once the short form rounds.
+    let size_text = if size < 1024 {
+        format!("{size} {}", if size == 1 { "byte" } else { "bytes" })
+    } else {
+        format!("{} ({size} bytes)", common::human_size(size))
+    };
+    rows.push(match files {
+        Some(files) => {
+            let partial = if complete { "" } else { ", some folders couldn't be read" };
+            ("size", format!("{size_text} in {files} {}{partial}", if files == 1 { "file" } else { "files" }))
+        }
+        None => ("size", size_text),
+    });
+    rows.push(("mode", format!("{} ({mode:o})", permissions(meta))));
+    let owner = owner.unwrap_or_else(|| meta.uid().to_string());
+    let group = group.unwrap_or_else(|| meta.gid().to_string());
+    rows.push(("owner", format!("{owner}:{group}")));
+    for (name, time) in times {
+        let shown = time.and_then(|s| Local.timestamp_opt(s, 0).single()).map(|t| t.format("%Y-%m-%d %H:%M:%S"));
+        rows.push((name, shown.map_or("unknown".to_string(), |t| t.to_string())));
+    }
+    let links = meta.nlink();
+    rows.push(("inode", format!("{}, {links} {}", meta.ino(), if links == 1 { "link" } else { "links" })));
+    if let Some(target) = &target {
+        let missing = if target_exists == Some(true) { "" } else { " (missing)" };
+        rows.push(("target", format!("{}{missing}", common::escaped(target.as_os_str()))));
+    }
+
+    let color = common::color();
+    writeln!(out, "{}", paint(&common::escaped(path.as_os_str()), common::BOLD, color))?;
+    for (label, value) in rows {
+        writeln!(out, "  {}  {value}", paint(&format!("{label:<8}"), common::BLUE, color))?;
+    }
+    Ok(())
+}
+
+/// Bytes and files below `dir`, without following links and staying on its
+/// drive unless `cross` is set. The flag is false when some folder couldn't
+/// be read, which makes the total a lower bound.
+// ponytail: a file with several hard links inside the tree counts once per
+// name; track (device, inode) pairs if exact totals matter.
+fn total(dir: &Path, dev: u64, cross: bool) -> (u64, u64, bool) {
+    let (mut bytes, mut files, mut complete) = (0, 0, true);
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        let Ok(list) = fs::read_dir(&dir) else {
+            complete = false;
+            continue;
+        };
+        for entry in list.flatten() {
+            // DirEntry::metadata doesn't follow symlinks.
+            let Ok(meta) = entry.metadata() else {
+                complete = false;
+                continue;
+            };
+            if meta.is_dir() {
+                if cross || meta.dev() == dev {
+                    todo.push(entry.path());
+                }
+            } else {
+                bytes += meta.len();
+                files += 1;
+            }
+        }
+    }
+    (bytes, files, complete)
+}
+
+/// The name for a user id, through the system's user database (so LDAP and
+/// the like work too). None when there's no such user.
+fn user_name(uid: u32) -> Option<String> {
+    let mut entry = MaybeUninit::<libc::passwd>::uninit();
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    let mut found = std::ptr::null_mut();
+    // SAFETY: getpwuid_r fills `entry`, keeping its strings in `buf`, and
+    // points `found` at it when there's a match.
+    let rc = unsafe { libc::getpwuid_r(uid, entry.as_mut_ptr(), buf.as_mut_ptr(), buf.len(), &mut found) };
+    if rc != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: pw_name is a NUL-terminated string inside `buf`, which is still alive.
+    Some(unsafe { CStr::from_ptr((*found).pw_name) }.to_string_lossy().into_owned())
+}
+
+/// The name for a group id, the same way as [`user_name`].
+fn group_name(gid: u32) -> Option<String> {
+    let mut entry = MaybeUninit::<libc::group>::uninit();
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    let mut found = std::ptr::null_mut();
+    // SAFETY: as in user_name, with getgrgid_r and a group entry.
+    let rc = unsafe { libc::getgrgid_r(gid, entry.as_mut_ptr(), buf.as_mut_ptr(), buf.len(), &mut found) };
+    if rc != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: gr_name is a NUL-terminated string inside `buf`, which is still alive.
+    Some(unsafe { CStr::from_ptr((*found).gr_name) }.to_string_lossy().into_owned())
 }
 
 /// `drwxr-xr-x` style string.

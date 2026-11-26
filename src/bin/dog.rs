@@ -4,8 +4,11 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write}
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread::sleep;
+use std::time::Duration;
 
-use clap::Parser;
+use clap::error::ErrorKind;
+use clap::{CommandFactory, Parser};
 use common::At;
 
 /// Output file content.
@@ -30,11 +33,19 @@ struct Cli {
     /// Print binary files to a terminal too, instead of skipping them
     #[arg(long)]
     binary: bool,
+
+    /// Keep printing lines as they're added to the file, until Ctrl+C.
+    /// Works on one file, and picks up a log that's rotated or emptied
+    #[arg(long, conflicts_with = "head")]
+    track: bool,
 }
 
 fn main() -> ExitCode {
     common::run(|| {
         let cli = Cli::parse();
+        if cli.track && (cli.paths.len() != 1 || cli.paths[0] == Path::new("-")) {
+            Cli::command().error(ErrorKind::ArgumentConflict, "--track follows exactly one file, not stdin").exit();
+        }
         let mut out = io::BufWriter::new(io::stdout().lock());
         let mut line_no = 0;
 
@@ -52,13 +63,22 @@ fn main() -> ExitCode {
             let result = if path == Path::new("-") {
                 print(io::stdin().lock(), &mut out, &cli, &mut line_no).at(path)
             } else {
-                open(path, output, terminal && !cli.binary).and_then(|mut f| match cli.tail {
-                    // Without line numbers there's no need to read a big log
-                    // from the start; its end can be found from the back.
-                    Some(n) if !cli.number && f.get_ref().metadata().is_ok_and(|m| m.is_file()) => {
-                        tail_of(f.get_mut(), n, &mut out).at(path)
+                open(path, output, terminal && !cli.binary).and_then(|mut f| {
+                    let end = match cli.tail {
+                        // Without line numbers there's no need to read a big log
+                        // from the start; its end can be found from the back.
+                        Some(n) if !cli.number && f.get_ref().metadata().is_ok_and(|m| m.is_file()) => {
+                            tail_of(f.get_mut(), n, &mut out).at(path)?
+                        }
+                        _ => {
+                            print(&mut f, &mut out, &cli, &mut line_no).at(path)?;
+                            f.stream_position().at(path)?
+                        }
+                    };
+                    if cli.track {
+                        track(path, end, &mut out, &cli, &mut line_no).at(path)?;
                     }
-                    _ => print(f, &mut out, &cli, &mut line_no).at(path),
+                    Ok(())
                 })
             };
             if let Err(e) = result {
@@ -76,13 +96,13 @@ fn main() -> ExitCode {
 }
 
 /// Writes the last `n` lines of a regular file, reading backwards from the
-/// end in chunks until it has them.
-fn tail_of(file: &mut File, n: usize, out: &mut impl Write) -> io::Result<()> {
+/// end in chunks until it has them. Returns where the file ended.
+fn tail_of(file: &mut File, n: usize, out: &mut impl Write) -> io::Result<u64> {
     const CHUNK: u64 = 64 * 1024;
-    if n == 0 {
-        return Ok(());
-    }
     let len = file.metadata()?.len();
+    if n == 0 {
+        return Ok(len);
+    }
     let mut pos = len;
     let mut buf = Vec::new();
     while pos > 0 {
@@ -103,7 +123,48 @@ fn tail_of(file: &mut File, n: usize, out: &mut impl Write) -> io::Result<()> {
     for line in &lines[lines.len().saturating_sub(n)..] {
         out.write_all(line)?;
     }
-    Ok(())
+    Ok(len)
+}
+
+/// Keeps printing what gets added to the file after `pos`, until Ctrl+C.
+/// A log that's rotated (a new file at the same path) is picked up from its
+/// start, and one that's emptied is read again from the top.
+fn track(path: &Path, mut pos: u64, out: &mut impl Write, cli: &Cli, line_no: &mut usize) -> io::Result<()> {
+    let mut file = File::open(path)?;
+    let mut inode = file.metadata()?.ino();
+    // Half a line written so far, held back until the rest of it arrives.
+    let mut pending = Vec::new();
+    loop {
+        out.flush()?;
+        sleep(Duration::from_millis(250));
+        if let Ok(meta) = fs::metadata(path) {
+            if meta.ino() != inode {
+                file = File::open(path)?;
+                inode = meta.ino();
+                pos = 0;
+                pending.clear();
+            }
+        }
+        let len = file.metadata()?.len();
+        if len < pos {
+            common::warn(format!("{}: file was emptied, reading it from the top", path.display()));
+            pos = 0;
+            pending.clear();
+        }
+        if len == pos {
+            continue;
+        }
+        file.seek(SeekFrom::Start(pos))?;
+        pos += (&mut file).take(len - pos).read_to_end(&mut pending)? as u64;
+        let Some(end) = pending.iter().rposition(|&b| b == b'\n') else { continue };
+        for line in pending.drain(..=end).collect::<Vec<_>>().split_inclusive(|&b| b == b'\n') {
+            *line_no += 1;
+            if cli.number {
+                write!(out, "{:>6}  ", *line_no)?;
+            }
+            out.write_all(line)?;
+        }
+    }
 }
 
 fn open(path: &Path, output: Option<(u64, u64)>, skip_binary: bool) -> common::Result<BufReader<File>> {

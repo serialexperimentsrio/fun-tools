@@ -31,10 +31,10 @@ The long-term goal is a friendlier replacement for coreutils: safe defaults, rea
 | `mov` | Move or rename files and folders |
 | `del` | Delete to a trash you can restore from |
 | `new` | Create files or folders, along with any missing parents, or update a file's timestamps |
-| `dog` | Print files, numbered if you like, or just the head or tail |
+| `dog` | Print files, numbered if you like, or just the head or tail, and keep up with a growing log |
 | `eco` | Print text |
 | `nav` | Change directory by path, by part of a folder's name, or back to where you were |
-| `idx` | List a folder, with details or as a tree |
+| `idx` | List a folder, with details or as a tree, or show everything about one file |
 | `loc` | Find files and folders by name or pattern |
 | `hid` | Show what machine you're on: OS, CPU, memory, GPU and so on |
 | `usg` | Show CPU, memory, swap and disk usage, and the busiest processes |
@@ -83,9 +83,11 @@ Get around and look around:
 nav web                      # jump to the nearest folder named like "web"
 nav -u 2                     # two levels up
 nav -                        # back to where you were
-idx -l --tree --depth 2      # a two-level tree with sizes and dates
+idx -l --tree --depth 2      # a two-level tree with owners, sizes and dates
+idx -m notes.txt             # everything about one file: owner, every timestamp, inode
 loc '*.rs' src -t file       # every Rust file under src
 dog --tail 50 app.log        # the end of a log
+dog --track app.log          # all of it, then every new line as it arrives
 ted notes.txt                # make a quick edit
 ```
 
@@ -157,7 +159,7 @@ Every other short flag belongs to a single tool, so a letter never means two dif
 
 `loc` and `idx --tree` stay on the drive they start on, so `loc notes /` under WSL doesn't wander off through all of `/mnt/c`. Add `--cross-drives` when you do want that.
 
-`idx`, `loc`, `sel idx`, `hid` and `usg` can all print JSON, and it has the same shape everywhere: lists are arrays of objects, sizes are in bytes, times are Unix seconds, and CPU is a percentage. An entry's `type` is `file`, `dir` or `link`, and anything that couldn't be found is `null`.
+`idx` (with or without `-m`), `loc`, `sel idx`, `hid` and `usg` can all print JSON, and it has the same shape everywhere: lists are arrays of objects, sizes are in bytes, times are Unix seconds, and CPU is a percentage. An entry's `type` is `file`, `dir` or `link`, and anything that couldn't be found is `null`.
 
 ## Installing
 
