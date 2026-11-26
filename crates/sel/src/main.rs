@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use common::{At, paint, selection};
+use serde_json::{Value, json};
 
 /// Keep a list of selected files and directories for `cop`, `mov` and `del`
 /// to act on. `sel a.txt b/` adds to it. To select a file named like one of
@@ -27,7 +28,11 @@ enum Action {
     Mop { paths: Vec<PathBuf> },
     /// List the selection
     #[command(visible_alias = "index")]
-    Idx,
+    Idx {
+        /// Print a JSON array instead
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -64,7 +69,16 @@ fn main() -> ExitCode {
                 }
                 selection::save(&selected)?;
             }
-            Some(Action::Idx) => {
+            Some(Action::Idx { json: true }) => {
+                let list: Vec<Value> = selected
+                    .iter()
+                    .map(|p| json!({ "path": p.to_string_lossy(), "exists": fs::symlink_metadata(p).is_ok() }))
+                    .collect();
+                let mut out = io::stdout().lock();
+                serde_json::to_writer_pretty(&mut out, &list)?;
+                writeln!(out)?;
+            }
+            Some(Action::Idx { json: false }) => {
                 let color = common::color();
                 let mut out = io::stdout().lock();
                 let terminal = out.is_terminal();

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 use common::paint;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 /// Show how much CPU, memory and disk is in use.
 #[derive(Parser)]
@@ -75,25 +75,44 @@ fn report(cli: &Cli) -> common::Result {
     let mem = common::meminfo()?;
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
+    // Rows for the screen, and the same numbers in the shape `--json` prints.
     let mut rows = Vec::new();
+    let mut obj = Map::new();
     if let (Some(a), Some(b)) = (&before, &after) {
         if wants(Resource::Cpu) {
             let busy = (b.total - a.total) - (b.idle - a.idle);
-            rows.push(Row::new("cpu", busy, (b.total - a.total).max(1), format!("{threads} threads")));
+            let total = (b.total - a.total).max(1);
+            rows.push(Row::new("cpu", busy, total, format!("{threads} threads")));
+            obj.insert(
+                "cpu".into(),
+                json!({ "percent": tenths(busy as f64 / total as f64 * 100.0), "threads": threads }),
+            );
         }
     }
     let get = |key: &str| mem.get(key).copied().unwrap_or(0);
     if wants(Resource::Ram) {
         let total = get("MemTotal");
-        rows.push(Row::sized("ram", total - get("MemAvailable"), total));
+        let used = total - get("MemAvailable");
+        rows.push(Row::sized("ram", used, total));
+        obj.insert("ram".into(), json!({ "used": used, "total": total }));
     }
-    if wants(Resource::Swap) && get("SwapTotal") > 0 {
-        rows.push(Row::sized("swap", get("SwapTotal") - get("SwapFree"), get("SwapTotal")));
+    if wants(Resource::Swap) {
+        let total = get("SwapTotal");
+        if total > 0 {
+            let used = total - get("SwapFree");
+            rows.push(Row::sized("swap", used, total));
+            obj.insert("swap".into(), json!({ "used": used, "total": total }));
+        } else {
+            obj.insert("swap".into(), Value::Null);
+        }
     }
     if wants(Resource::Disk) {
+        let mut list = Vec::new();
         for (mount, used, total) in disks()? {
             rows.push(Row::sized(&format!("disk {}", mount.display()), used, total));
+            list.push(json!({ "mount": mount.to_string_lossy(), "used": used, "total": total }));
         }
+        obj.insert("disks".into(), list.into());
     }
 
     let mut busiest = Vec::new();
@@ -112,14 +131,10 @@ fn report(cli: &Cli) -> common::Result {
 
     let mut out = io::stdout().lock();
     if cli.json {
-        let mut obj = serde_json::Map::new();
-        for row in &rows {
-            obj.insert(row.label.clone(), json!({ "used": row.used, "total": row.total }));
-        }
         if cli.processes.is_some() {
             let list: Vec<Value> = busiest
                 .iter()
-                .map(|(pid, cpu, mem, name)| json!({ "pid": pid, "cpu": (cpu * 10.0).round() / 10.0, "memory": mem, "name": name }))
+                .map(|(pid, cpu, mem, name)| json!({ "pid": pid, "cpu": tenths(*cpu), "memory": mem, "name": name }))
                 .collect();
             obj.insert("processes".into(), list.into());
         }
@@ -165,6 +180,11 @@ impl Row {
         let detail = format!("{} / {}", common::human_size(used), common::human_size(total));
         Row::new(label, used, total, detail)
     }
+}
+
+/// Rounds a percentage to one decimal for `--json`.
+fn tenths(pct: f64) -> f64 {
+    (pct * 10.0).round() / 10.0
 }
 
 fn bar(pct: f64, color: bool) -> String {
@@ -274,7 +294,7 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
         if PSEUDO.contains(&kind) {
             continue;
         }
-        let mount = PathBuf::from(unescape(mount));
+        let mount = common::mount_path(mount);
         // Single files can be mount points too (WSL's /init); they aren't disks.
         if !mount.is_dir() {
             continue;
@@ -299,37 +319,10 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
     Ok(found)
 }
 
-/// /proc/mounts writes spaces and such as octal escapes, e.g. `\040`.
-fn unescape(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let octal = bytes.get(i + 1..i + 4).and_then(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 8).ok());
-        match (bytes[i], octal) {
-            (b'\\', Some(byte)) => {
-                out.push(byte);
-                i += 4;
-            }
-            (b, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn statvfs(path: &Path) -> Option<libc::statvfs> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut st = MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: c_path is a valid C string and st is only read after statvfs fills it in.
     let ok = unsafe { libc::statvfs(c_path.as_ptr(), st.as_mut_ptr()) } == 0;
     ok.then(|| unsafe { st.assume_init() })
-}
-
-#[test]
-fn mount_escapes() {
-    assert_eq!(unescape(r"/mnt/my\040disk"), "/mnt/my disk");
-    assert_eq!(unescape("/plain"), "/plain");
 }

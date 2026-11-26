@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
 use common::paint;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Show information about this machine.
 #[derive(Parser)]
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
         if cli.json {
             let mut map = Map::new();
             for field in fields {
-                map.insert(name(field), field.value().map_or(Value::Null, Value::String));
+                map.insert(name(field), field.value().unwrap_or(Value::Null));
             }
             serde_json::to_writer_pretty(&mut out, &map)?;
             writeln!(out)?;
@@ -63,11 +63,35 @@ fn main() -> ExitCode {
 
         let color = common::color();
         for field in fields {
-            let value = field.value().unwrap_or_else(|| paint("unknown", common::DIM, color));
+            let value = field.value().map_or_else(|| paint("unknown", common::DIM, color), |v| show(field, &v));
             writeln!(out, "{}  {value}", paint(&format!("{:<10}", name(field)), common::BLUE, color))?;
         }
         Ok(())
     })
+}
+
+/// How a value from [`Field::value`] reads on screen.
+fn show(field: Field, value: &Value) -> String {
+    let num = |key: &str| value[key].as_u64().unwrap_or(0);
+    match (field, value) {
+        (Field::Cpu, _) => format!("{} ({} threads)", value["model"].as_str().unwrap_or_default(), num("threads")),
+        (Field::Ram, _) => {
+            let (used, total) = (num("used"), num("total"));
+            format!("{} / {} ({}%)", common::human_size(used), common::human_size(total), used * 100 / total.max(1))
+        }
+        (Field::Uptime, _) => {
+            let secs = value.as_u64().unwrap_or(0);
+            let (days, hours, mins) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60);
+            match (days, hours) {
+                (0, 0) => format!("{mins}m"),
+                (0, _) => format!("{hours}h {mins}m"),
+                _ => format!("{days}d {hours}h {mins}m"),
+            }
+        }
+        (_, Value::Array(items)) => items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+        (_, Value::String(text)) => text.clone(),
+        (_, other) => other.to_string(),
+    }
 }
 
 fn name(field: Field) -> String {
@@ -84,61 +108,54 @@ fn is_wsl() -> bool {
 }
 
 impl Field {
-    fn value(self) -> Option<String> {
+    /// The value as `--json` prints it: sizes in bytes, uptime in seconds,
+    /// and a list where there can be several.
+    fn value(self) -> Option<Value> {
         match self {
-            Field::Host => read("/proc/sys/kernel/hostname"),
-            Field::Kernel => read("/proc/sys/kernel/osrelease"),
+            Field::Host => read("/proc/sys/kernel/hostname").map(Value::from),
+            Field::Kernel => read("/proc/sys/kernel/osrelease").map(Value::from),
             Field::Os => {
                 let release = fs::read_to_string("/etc/os-release").ok()?;
                 let name = release
                     .lines()
                     .find_map(|l| l.strip_prefix("PRETTY_NAME="))
                     .map(|v| v.trim_matches('"').to_string())?;
-                Some(if is_wsl() { format!("{name} (WSL)") } else { name })
+                Some(Value::from(if is_wsl() { format!("{name} (WSL)") } else { name }))
             }
             Field::Shell => {
                 let shell = env::var("SHELL").ok()?;
-                Path::new(&shell).file_name().map(|n| n.to_string_lossy().into_owned())
+                Path::new(&shell).file_name().map(|n| Value::from(n.to_string_lossy()))
             }
             Field::Terminal => env::var("TERM_PROGRAM")
                 .ok()
                 .or_else(|| env::var_os("WT_SESSION").map(|_| "Windows Terminal".to_string()))
-                .or_else(|| env::var("TERM").ok()),
+                .or_else(|| env::var("TERM").ok())
+                .map(Value::from),
             Field::Cpu => {
                 let info = fs::read_to_string("/proc/cpuinfo").ok()?;
                 let model = info.lines().find_map(|l| l.strip_prefix("model name")?.split_once(':'))?.1;
                 let threads = info.lines().filter(|l| l.starts_with("processor")).count();
                 let model = model.split_whitespace().collect::<Vec<_>>().join(" ");
-                Some(format!("{model} ({threads} threads)"))
+                Some(json!({ "model": model, "threads": threads }))
             }
-            Field::Gpu => gpus(),
+            Field::Gpu => gpus().map(Value::from),
             Field::Ram => {
                 let mem = common::meminfo().ok()?;
                 let total = *mem.get("MemTotal")?;
                 let used = total - mem.get("MemAvailable").copied().unwrap_or(0);
-                Some(format!(
-                    "{} / {} ({}%)",
-                    common::human_size(used),
-                    common::human_size(total),
-                    used * 100 / total.max(1)
-                ))
+                Some(json!({ "used": used, "total": total }))
             }
-            Field::Resolution => resolutions(),
+            Field::Resolution => resolutions().map(Value::from),
             Field::Uptime => {
                 let secs = read("/proc/uptime")?.split_whitespace().next()?.parse::<f64>().ok()? as u64;
-                let (days, hours, mins) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60);
-                Some(match (days, hours) {
-                    (0, 0) => format!("{mins}m"),
-                    (0, _) => format!("{hours}h {mins}m"),
-                    _ => format!("{days}d {hours}h {mins}m"),
-                })
+                Some(Value::from(secs))
             }
         }
     }
 }
 
 /// Graphics cards from /sys/class/drm, named through pci.ids when it's installed.
-fn gpus() -> Option<String> {
+fn gpus() -> Option<Vec<String>> {
     let mut found = Vec::new();
     for entry in fs::read_dir("/sys/class/drm").ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -158,7 +175,7 @@ fn gpus() -> Option<String> {
     if found.is_empty() && Path::new("/dev/dxg").exists() {
         found.push("host GPU through WSL (/dev/dxg)".to_string());
     }
-    (!found.is_empty()).then(|| found.join(", "))
+    (!found.is_empty()).then_some(found)
 }
 
 fn pci_name(vendor: &str, device: &str) -> Option<String> {
@@ -193,7 +210,7 @@ fn pci_name(vendor: &str, device: &str) -> Option<String> {
 }
 
 /// Current mode of every connected display, from the kernel's DRM connectors.
-fn resolutions() -> Option<String> {
+fn resolutions() -> Option<Vec<String>> {
     let mut found = Vec::new();
     for entry in fs::read_dir("/sys/class/drm").ok()?.flatten() {
         let path = entry.path();
@@ -205,5 +222,5 @@ fn resolutions() -> Option<String> {
             }
         }
     }
-    (!found.is_empty()).then(|| found.join(", "))
+    (!found.is_empty()).then_some(found)
 }

@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
 use common::{At, paint};
+use serde_json::{Value, json};
 
 /// Find files and directories by name below a directory.
 #[derive(Parser)]
@@ -28,12 +29,28 @@ struct Cli {
     /// How many directory levels to go down
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
+
+    /// Print a JSON array instead
+    #[arg(long)]
+    json: bool,
 }
 
+/// Named the same as the `type` field in `--json`.
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
 enum Kind {
     File,
     Dir,
+    Link,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::File => "file",
+            Kind::Dir => "dir",
+            Kind::Link => "link",
+        }
+    }
 }
 
 struct Search {
@@ -47,6 +64,7 @@ struct Search {
     out: BufWriter<io::StdoutLock<'static>>,
     color: bool,
     terminal: bool,
+    json: Vec<Value>,
     ok: bool,
 }
 
@@ -64,10 +82,15 @@ fn main() -> ExitCode {
             out: BufWriter::new(io::stdout().lock()),
             color: common::color(),
             terminal: io::stdout().is_terminal(),
+            json: Vec::new(),
             ok: true,
             cli,
         };
         search.walk(&root, search.cli.depth.unwrap_or(usize::MAX))?;
+        if search.cli.json {
+            serde_json::to_writer_pretty(&mut search.out, &search.json)?;
+            writeln!(search.out)?;
+        }
         search.out.flush()?;
         common::finish(search.ok)
     })
@@ -85,14 +108,12 @@ impl Search {
                 continue;
             }
             // file_type() doesn't follow symlinks, so linked directories aren't walked twice.
-            let is_dir = item.file_type().at(&item.path())?.is_dir();
+            let file_type = item.file_type().at(&item.path())?;
+            let is_dir = file_type.is_dir();
+            let kind = common::kind(file_type);
             let path = item.path();
 
-            let kind_ok = match self.cli.kind {
-                Some(Kind::Dir) => is_dir,
-                Some(Kind::File) => !is_dir,
-                None => true,
-            };
+            let kind_ok = self.cli.kind.is_none_or(|k| k.name() == kind);
             let subject = if self.by_path {
                 path.strip_prefix(&self.root).unwrap_or(&path).to_string_lossy().to_lowercase()
             } else {
@@ -100,13 +121,17 @@ impl Search {
             };
             if kind_ok && self.matches(&subject) {
                 let shown = path.strip_prefix("./").unwrap_or(&path);
-                if is_dir && self.color {
-                    let text = common::escaped(shown.as_os_str());
-                    write!(self.out, "{}", paint(&text, common::BLUE, true))?;
+                if self.cli.json {
+                    self.json.push(json!({ "path": shown.to_string_lossy(), "type": kind }));
                 } else {
-                    common::write_path(&mut self.out, shown, self.terminal)?;
+                    if is_dir && self.color {
+                        let text = common::escaped(shown.as_os_str());
+                        write!(self.out, "{}", paint(&text, common::BLUE, true))?;
+                    } else {
+                        common::write_path(&mut self.out, shown, self.terminal)?;
+                    }
+                    writeln!(self.out)?;
                 }
-                writeln!(self.out)?;
             }
 
             if is_dir {

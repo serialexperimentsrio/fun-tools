@@ -282,7 +282,7 @@ fn make_writable(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Options for [`place_into`].
+/// Options for [`place_into`] and [`place`].
 pub struct Place {
     /// Move instead of copy.
     pub cut: bool,
@@ -296,16 +296,21 @@ pub struct Place {
 /// `put` and `cop --to`, so pasting behaves the same either way.
 pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
     let name = src.file_name().ok_or_else(|| format!("{}: can't copy that", src.display()))?;
+    place(src, &dir.join(name), how)
+}
+
+/// Copies or moves `src` to exactly `target`, so it can take a new name.
+pub fn place(src: &Path, target: &Path, how: &Place) -> Result {
     fs::symlink_metadata(src).at(src)?;
     let src_real = fs::canonicalize(src).at(src)?;
-    if fs::canonicalize(dir).at(dir)?.starts_with(&src_real) {
+    let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if fs::canonicalize(parent).at(parent)?.starts_with(&src_real) {
         return Err(format!("{}: can't put a directory inside itself", src.display()).into());
     }
 
-    let target = dir.join(name);
-    if fs::symlink_metadata(&target).is_ok() {
+    if fs::symlink_metadata(target).is_ok() {
         // Without this, -f would delete the source before copying it onto itself.
-        if same_file(&target, src) {
+        if same_file(target, src) {
             return Err(format!("{}: already there", target.display()).into());
         }
         if !how.force {
@@ -318,7 +323,19 @@ pub fn place_into(src: &Path, dir: &Path, how: &Place) -> Result {
         println!("would {verb} {} -> {}", src.display(), target.display());
         return Ok(());
     }
-    replace(&target, || if how.cut { move_path(src, &target) } else { copy_path(src, &target) }).at(src)
+    replace(target, || if how.cut { move_path(src, target) } else { copy_path(src, target) }).at(src)
+}
+
+/// The kind of an entry as `--json` and `loc -t` name it. FIFOs, sockets
+/// and devices count as files.
+pub fn kind(file_type: fs::FileType) -> &'static str {
+    if file_type.is_dir() {
+        "dir"
+    } else if file_type.is_symlink() {
+        "link"
+    } else {
+        "file"
+    }
 }
 
 /// A name made safe for a terminal: control characters are shown escaped, so
@@ -373,6 +390,34 @@ pub fn meminfo() -> Result<std::collections::HashMap<String, u64>> {
         .collect())
 }
 
+/// A mount point as /proc/mounts writes it, with octal escapes like `\040`
+/// for a space turned back into the real bytes.
+pub fn mount_path(field: &str) -> PathBuf {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let octal = bytes.get(i + 1..i + 4).and_then(|d| u8::from_str_radix(std::str::from_utf8(d).ok()?, 8).ok());
+        match (bytes[i], octal) {
+            (b'\\', Some(byte)) => {
+                out.push(byte);
+                i += 4;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    PathBuf::from(OsStr::from_bytes(&out))
+}
+
+/// Every mount point in /proc/mounts, in the order listed.
+pub fn mount_points() -> Vec<PathBuf> {
+    let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
+    mounts.lines().filter_map(|line| line.split_whitespace().nth(1)).map(mount_path).collect()
+}
+
 /// 1536 -> "1.5 KiB".
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
@@ -395,6 +440,12 @@ mod tests {
         assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1536), "1.5 KiB");
         assert_eq!(human_size(5 << 30), "5.0 GiB");
+    }
+
+    #[test]
+    fn mount_escapes() {
+        assert_eq!(mount_path(r"/mnt/my\040disk"), Path::new("/mnt/my disk"));
+        assert_eq!(mount_path("/plain"), Path::new("/plain"));
     }
 
     #[test]
@@ -455,6 +506,22 @@ mod tests {
         assert!(!root.join("src").exists());
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn places_under_a_new_name() {
+        let dir = env::temp_dir().join(format!("fun-tools-place-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a"), "x").unwrap();
+        let how = Place { cut: false, force: false, dry_run: false };
+
+        place(&dir.join("a"), &dir.join("b"), &how).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("b")).unwrap(), "x");
+        assert!(dir.join("a").exists(), "a copy leaves the source");
+        assert!(place(&dir.join("a"), &dir.join("b"), &how).is_err(), "no overwrite without force");
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

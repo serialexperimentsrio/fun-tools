@@ -31,8 +31,9 @@ struct Cli {
     #[arg(short = 'x', long)]
     cut: bool,
 
-    /// Copy straight into this directory, leaving the clipboard alone
-    #[arg(short, long, value_name = "DIR", conflicts_with = "cut")]
+    /// Copy straight into this directory, or to this name when copying one
+    /// path, leaving the clipboard alone
+    #[arg(long, value_name = "DEST", conflicts_with = "cut")]
     to: Option<PathBuf>,
 
     /// With --to, replace anything already there
@@ -155,15 +156,23 @@ fn main() -> ExitCode {
     })
 }
 
-fn copy_to(dir: &Path, paths: &[PathBuf], cli: &Cli) -> common::Result {
-    if !dir.is_dir() {
-        let why = if dir.exists() { "not a directory" } else { "no such directory" };
-        return Err(format!("{}: {why}", dir.display()).into());
-    }
+/// Copies into `dest` when it's a directory. A single path can instead be
+/// copied to `dest` as a new name, the way `mov` renames.
+fn copy_to(dest: &Path, paths: &[PathBuf], cli: &Cli) -> common::Result {
     let how = Place { cut: false, force: cli.force, dry_run: cli.dry_run };
+    if !dest.is_dir() {
+        // `--to notes/` means "into notes", so a missing notes/ is an error,
+        // not a copy to a file called notes.
+        let wants_dir = dest.as_os_str().as_bytes().ends_with(b"/");
+        if let ([src], false) = (paths, wants_dir) {
+            return common::place(src, dest, &how);
+        }
+        let why = if dest.exists() { "not a directory" } else { "no such directory" };
+        return Err(format!("{}: {why}", dest.display()).into());
+    }
     let mut ok = true;
     for src in paths {
-        if let Err(e) = common::place_into(src, dir, &how) {
+        if let Err(e) = common::place_into(src, dest, &how) {
             common::warn(e);
             ok = false;
         }

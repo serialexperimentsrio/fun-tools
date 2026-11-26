@@ -20,12 +20,12 @@ struct Cli {
     number: bool,
 
     /// Only print the first N lines of each file
-    #[arg(long, value_name = "N", conflicts_with = "last")]
-    first: Option<usize>,
+    #[arg(long, value_name = "N", conflicts_with = "tail")]
+    head: Option<usize>,
 
     /// Only print the last N lines of each file
     #[arg(long, value_name = "N")]
-    last: Option<usize>,
+    tail: Option<usize>,
 
     /// Print binary files to a terminal too, instead of skipping them
     #[arg(long)]
@@ -90,7 +90,7 @@ fn open(path: &Path, output: Option<(u64, u64)>, skip_binary: bool) -> common::R
 
 /// Writes one input to `out`. `line_no` carries on across files.
 fn print(mut input: impl BufRead, out: &mut impl Write, cli: &Cli, line_no: &mut usize) -> io::Result<()> {
-    if !cli.number && cli.first.is_none() && cli.last.is_none() {
+    if !cli.number && cli.head.is_none() && cli.tail.is_none() {
         io::copy(&mut input, out)?;
         return Ok(());
     }
@@ -102,16 +102,16 @@ fn print(mut input: impl BufRead, out: &mut impl Write, cli: &Cli, line_no: &mut
         out.write_all(line)
     };
 
-    // Kept with their real line numbers, so `-n --last 5` shows where they are.
+    // Kept with their real line numbers, so `-n --tail 5` shows where they are.
     let mut tail = VecDeque::new();
     let mut seen = 0;
     let mut line = Vec::new();
     // Bytes, not strings, so files that aren't valid UTF-8 still print.
     // The limit is checked before reading so a terminal isn't asked for one line too many.
-    while cli.first != Some(seen) && input.read_until(b'\n', &mut line)? > 0 {
+    while cli.head != Some(seen) && input.read_until(b'\n', &mut line)? > 0 {
         seen += 1;
         *line_no += 1;
-        match cli.last {
+        match cli.tail {
             Some(0) => {}
             Some(n) => {
                 if tail.len() == n {
@@ -144,10 +144,10 @@ mod tests {
     fn slices_and_numbers() {
         let text = "a\nb\nc\nd";
         assert_eq!(run(&[], text), text);
-        assert_eq!(run(&["--first", "2"], text), "a\nb\n");
-        assert_eq!(run(&["--last", "2"], text), "c\nd");
-        assert_eq!(run(&["--last", "0"], text), "");
-        assert_eq!(run(&["-n", "--first", "1"], text), "     1  a\n");
-        assert_eq!(run(&["-n", "--last", "1"], text), "     4  d");
+        assert_eq!(run(&["--head", "2"], text), "a\nb\n");
+        assert_eq!(run(&["--tail", "2"], text), "c\nd");
+        assert_eq!(run(&["--tail", "0"], text), "");
+        assert_eq!(run(&["-n", "--head", "1"], text), "     1  a\n");
+        assert_eq!(run(&["-n", "--tail", "1"], text), "     4  d");
     }
 }

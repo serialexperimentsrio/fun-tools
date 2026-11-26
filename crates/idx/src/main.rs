@@ -30,7 +30,7 @@ struct Cli {
     long: bool,
 
     /// Walk into subdirectories and draw a tree
-    #[arg(short, long)]
+    #[arg(short, long, visible_alias = "tree")]
     recursive: bool,
 
     /// How deep to walk. Implies --recursive
@@ -174,18 +174,11 @@ impl Lister<'_> {
         let mode = meta.permissions().mode();
 
         if self.cli.json {
-            let kind = if meta.is_dir() {
-                "dir"
-            } else if meta.is_symlink() {
-                "link"
-            } else {
-                "file"
-            };
             let modified = entry.modified().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             self.json.push(json!({
                 "path": entry.path.to_string_lossy(),
                 "name": entry.name.to_string_lossy(),
-                "type": kind,
+                "type": common::kind(meta.file_type()),
                 "size": meta.len(),
                 "modified": modified,
                 "mode": format!("{:o}", mode & 0o7777),

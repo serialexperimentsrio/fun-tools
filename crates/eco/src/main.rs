@@ -1,18 +1,18 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
 
-/// Echo input to stdout.
+/// Print text. To pass a file or stdin through, use `dog`.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Text to print, joined by spaces. Reads stdin when left out
+    /// Text to print, joined by spaces
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     text: Vec<String>,
 
     /// Don't print the trailing newline
-    #[arg(short, long)]
+    #[arg(long)]
     no_newline: bool,
 
     /// Interpret backslash escapes: \n \t \r \\ \0 \e
@@ -24,14 +24,6 @@ fn main() -> ExitCode {
     common::run(|| {
         let cli = Cli::parse();
         let mut out = io::stdout().lock();
-
-        // With no text, pass piped input through. On a terminal there's
-        // nothing to pass, so behave like a plain `eco` with an empty line.
-        if cli.text.is_empty() && !io::stdin().is_terminal() {
-            io::copy(&mut io::stdin().lock(), &mut out)?;
-            return Ok(());
-        }
-
         let mut text = cli.text.join(" ");
         if cli.escapes {
             text = unescape(&text);
