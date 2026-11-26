@@ -120,21 +120,17 @@ fn insert(dest: &Path, text: &str, pos: Pos, dry_run: bool) -> common::Result {
         return Ok(());
     }
 
-    // Write a temporary file next to it and rename it over the original, so
-    // a crash halfway through can't leave the file cut short.
-    let name = real.file_name().ok_or_else(|| format!("{}: not a file", dest.display()))?;
-    let tmp = real.with_file_name(format!(".{}.put-tmp", name.to_string_lossy()));
-    fs::write(&tmp, new).at(&tmp)?;
-    if let Ok(meta) = fs::metadata(&real) {
-        fs::set_permissions(&tmp, meta.permissions()).at(&tmp)?;
-    }
-    fs::rename(&tmp, &real).at(&real)
+    common::write_file(&real, new.as_bytes()).at(dest)
 }
 
 /// Puts `text` into `old` at `pos`, keeping it on lines of its own. Returns
-/// the new contents and the line the text starts on.
+/// the new contents and the line the text starts on. A file with Windows
+/// line endings gets them in the pasted text too.
 fn splice(old: &str, text: &str, pos: Pos) -> Result<(String, usize), String> {
     let lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let crlf = lines.first().is_some_and(|l| l.ends_with("\r\n"));
+    let (text, nl) =
+        if crlf { (text.replace("\r\n", "\n").replace('\n', "\r\n"), "\r\n") } else { (text.to_string(), "\n") };
     let index = match pos {
         Pos::Start => 0,
         Pos::End => lines.len(),
@@ -143,11 +139,11 @@ fn splice(old: &str, text: &str, pos: Pos) -> Result<(String, usize), String> {
     };
     let mut out = lines[..index].concat();
     if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(nl);
     }
-    out.push_str(text);
+    out.push_str(&text);
     if index < lines.len() && !text.ends_with('\n') {
-        out.push('\n');
+        out.push_str(nl);
     }
     out.push_str(&lines[index..].concat());
     Ok((out, index + 1))
@@ -194,4 +190,6 @@ fn splicing() {
     assert_eq!(splice("no newline", "new", Pos::End).unwrap().0, "no newline\nnew");
     assert_eq!(splice("", "new\n", Pos::Line(1)).unwrap().0, "new\n");
     assert!(splice(file, "x", Pos::Line(9)).is_err());
+    // Windows line endings carry over to the pasted text.
+    assert_eq!(splice("one\r\ntwo\r\n", "a\nb", Pos::Line(2)).unwrap().0, "one\r\na\r\nb\r\ntwo\r\n");
 }

@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, BufWriter, IsTerminal, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -33,6 +34,10 @@ struct Cli {
     /// Print a JSON array instead
     #[arg(long)]
     json: bool,
+
+    /// Also search other drives mounted below ROOT (like /mnt/c from /)
+    #[arg(long)]
+    cross_drives: bool,
 }
 
 /// Named the same as the `type` field in `--json`.
@@ -60,6 +65,8 @@ struct Search {
     /// A pattern with a `/` is matched against the path below ROOT, not just the name.
     by_path: bool,
     root: PathBuf,
+    /// The drive ROOT is on; others are skipped unless --cross-drives.
+    root_dev: u64,
     cli: Cli,
     out: BufWriter<io::StdoutLock<'static>>,
     color: bool,
@@ -78,6 +85,7 @@ fn main() -> ExitCode {
             needle,
             wildcard: cli.pattern.contains(['*', '?']),
             by_path: cli.pattern.contains('/'),
+            root_dev: fs::metadata(&root).at(&root)?.dev(),
             root: root.clone(),
             out: BufWriter::new(io::stdout().lock()),
             color: common::color(),
@@ -134,7 +142,10 @@ impl Search {
                 }
             }
 
-            if is_dir {
+            // Another drive mounted here (/mnt/c below /) can be huge or slow,
+            // so stay on the one ROOT is on unless asked.
+            let same_drive = || fs::symlink_metadata(&path).is_ok_and(|m| m.dev() == self.root_dev);
+            if is_dir && (self.cli.cross_drives || same_drive()) {
                 if let Err(e) = self.walk(&path, depth_left - 1) {
                     if common::broken_pipe(&*e) {
                         return Err(e);

@@ -6,3 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+clap.workspace = true
+common.workspace = true
+libc.workspace = true

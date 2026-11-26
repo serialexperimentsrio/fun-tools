@@ -118,25 +118,30 @@ pub fn full_path(path: &Path) -> io::Result<PathBuf> {
 /// Reads a list of paths stored one per line. A missing file is an empty list.
 pub fn read_paths(file: &Path) -> Result<Vec<PathBuf>> {
     match fs::read(file) {
-        // Newline-separated, so a file name that contains a newline won't
-        // survive the round trip. NUL separators would fix that if it matters.
-        Ok(bytes) => Ok(bytes
-            .split(|&b| b == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| PathBuf::from(OsStr::from_bytes(line)))
-            .collect()),
+        Ok(bytes) => Ok(split_paths(&bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e).at(file),
     }
 }
 
 pub fn write_paths(file: &Path, paths: &[PathBuf]) -> Result {
+    fs::write(file, join_paths(paths)).at(file)
+}
+
+/// Paths separated by NUL bytes, the one byte a path can't contain. A
+/// newline would split a file called `a<newline>b` into two other paths.
+pub fn join_paths(paths: &[PathBuf]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for path in paths {
         bytes.extend_from_slice(path.as_os_str().as_bytes());
-        bytes.push(b'\n');
+        bytes.push(0);
     }
-    fs::write(file, bytes).at(file)
+    bytes
+}
+
+/// Reads back what [`join_paths`] wrote.
+pub fn split_paths(bytes: &[u8]) -> Vec<PathBuf> {
+    bytes.split(|&b| b == 0).filter(|p| !p.is_empty()).map(|p| PathBuf::from(OsStr::from_bytes(p))).collect()
 }
 
 /// The list of paths picked with `sel`.
@@ -175,6 +180,10 @@ pub mod selection {
 /// Renames `from` to `to`, copying and deleting when they sit on
 /// different filesystems. If the copy fails halfway, the partial copy is
 /// removed and the source is left as it was.
+///
+/// Once the copy is complete it counts as moved, even if some of the
+/// original can't be removed afterwards: that's only a warning, so callers
+/// never undo the one full copy there is.
 pub fn move_path(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
@@ -182,7 +191,15 @@ pub fn move_path(from: &Path, to: &Path) -> io::Result<()> {
                 let _ = remove_path(to);
                 return Err(e);
             }
-            remove_path(from)
+            if let Err(e) = remove_path(from) {
+                warn(format!(
+                    "{}: copied to {}, but some of the original couldn't be removed: {}",
+                    from.display(),
+                    to.display(),
+                    tidy(&e.to_string())
+                ));
+            }
+            Ok(())
         }
         other => other,
     }
@@ -248,6 +265,54 @@ pub fn replace(target: &Path, make: impl FnOnce() -> io::Result<()>) -> io::Resu
         Err(e) => {
             let _ = fs::rename(&aside, target);
             Err(e)
+        }
+    }
+}
+
+/// Replaces a file's contents, or creates it, without ever leaving it half
+/// written: the new text goes to a temporary file that's then renamed over
+/// the old one, with the old one's permissions and owner, so a write under
+/// sudo doesn't hand the file to root. Symlinks are written through.
+///
+/// Two cases write in place instead: a file with other hard links (a rename
+/// would leave those names showing the old text), and a folder you can't
+/// create the temporary file in.
+pub fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let old = match fs::metadata(&real) {
+        Ok(meta) => {
+            // A rename would happily replace a read-only file; refuse like a plain write would.
+            fs::OpenOptions::new().write(true).open(&real)?;
+            Some(meta)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    if old.as_ref().is_some_and(|m| m.nlink() > 1) {
+        return fs::write(&real, bytes);
+    }
+
+    let name = real.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let tmp = real.with_file_name(format!(".{}.fun-tools-tmp", name.to_string_lossy()));
+    let result = (|| {
+        fs::write(&tmp, bytes)?;
+        if let Some(old) = &old {
+            fs::set_permissions(&tmp, old.permissions())?;
+            let new = fs::metadata(&tmp)?;
+            if (new.uid(), new.gid()) != (old.uid(), old.gid()) {
+                std::os::unix::fs::chown(&tmp, Some(old.uid()), Some(old.gid()))?;
+            }
+        }
+        fs::rename(&tmp, &real)
+    })();
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            // A folder you can't write to, or an owner you can't hand the file
+            // back to, rules out the temporary file. In place still works.
+            if e.kind() == io::ErrorKind::PermissionDenied { fs::write(&real, bytes) } else { Err(e) }
         }
     }
 }
@@ -412,10 +477,35 @@ pub fn mount_path(field: &str) -> PathBuf {
     PathBuf::from(OsStr::from_bytes(&out))
 }
 
-/// Every mount point in /proc/mounts, in the order listed.
-pub fn mount_points() -> Vec<PathBuf> {
+/// Mount points from /proc/mounts with their filesystem type, leaving out
+/// network filesystems: one that stops answering would hang whatever
+/// touches it. WSL's 9p drives (/mnt/c) are local and stay in.
+pub fn local_mounts() -> Vec<(PathBuf, String)> {
+    const NETWORK: &[&str] = &[
+        "afs",
+        "ceph",
+        "cifs",
+        "davfs",
+        "fuse.rclone",
+        "fuse.s3fs",
+        "fuse.sshfs",
+        "glusterfs",
+        "ncpfs",
+        "nfs",
+        "nfs4",
+        "smb3",
+        "smbfs",
+        "sshfs",
+    ];
     let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
-    mounts.lines().filter_map(|line| line.split_whitespace().nth(1)).map(mount_path).collect()
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace().skip(1);
+            let (mount, kind) = (parts.next()?, parts.next()?);
+            (!NETWORK.contains(&kind)).then(|| (mount_path(mount), kind.to_string()))
+        })
+        .collect()
 }
 
 /// 1536 -> "1.5 KiB".
@@ -440,6 +530,38 @@ mod tests {
         assert_eq!(human_size(1023), "1023 B");
         assert_eq!(human_size(1536), "1.5 KiB");
         assert_eq!(human_size(5 << 30), "5.0 GiB");
+    }
+
+    #[test]
+    fn writes_files_safely() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = env::temp_dir().join(format!("fun-tools-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+
+        write_file(&file, b"one").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        write_file(&file, b"two").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"two");
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640, "keeps permissions");
+
+        // Another name for the same file sees the new text too.
+        fs::hard_link(&file, dir.join("g")).unwrap();
+        write_file(&file, b"three").unwrap();
+        assert_eq!(fs::read(dir.join("g")).unwrap(), b"three");
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o440)).unwrap();
+        assert!(write_file(&file, b"four").is_err(), "a read-only file stays as it is");
+        assert_eq!(fs::read(&file).unwrap(), b"three");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn paths_survive_newlines() {
+        let paths = vec![PathBuf::from("/dir/a\nb"), PathBuf::from("/plain")];
+        assert_eq!(split_paths(&join_paths(&paths)), paths);
     }
 
     #[test]

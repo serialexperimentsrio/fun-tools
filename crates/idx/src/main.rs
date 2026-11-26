@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs::{self, Metadata};
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,6 +44,10 @@ struct Cli {
     /// Print a JSON array instead
     #[arg(long, conflicts_with = "long")]
     json: bool,
+
+    /// Also walk into other drives mounted inside the tree (like /mnt/c from /)
+    #[arg(long)]
+    cross_drives: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -73,6 +77,8 @@ struct Lister<'a> {
     color: bool,
     terminal: bool,
     json: Vec<Value>,
+    /// The drive the listing starts on; a tree doesn't leave it unless --cross-drives.
+    root_dev: u64,
     ok: bool,
 }
 
@@ -88,6 +94,7 @@ fn main() -> ExitCode {
             color: common::color(),
             terminal: io::stdout().is_terminal(),
             json: Vec::new(),
+            root_dev: meta.dev(),
             ok: true,
         };
 
@@ -128,7 +135,9 @@ impl Lister<'_> {
                 (true, true) => "└── ",
             };
             self.show(entry, &format!("{prefix}{branch}"))?;
-            if tree && entry.meta.is_dir() {
+            // A drive mounted inside the tree is listed but not walked into.
+            let same_drive = self.cli.cross_drives || entry.meta.dev() == self.root_dev;
+            if tree && entry.meta.is_dir() && same_drive {
                 let next = format!("{prefix}{}", if last { "    " } else { "│   " });
                 // A subdirectory we can't open shouldn't stop the rest of the tree.
                 if let Err(e) = self.list(&entry.path, depth_left - 1, &next) {

@@ -279,22 +279,17 @@ fn disks() -> common::Result<Vec<(PathBuf, u64, u64)>> {
         "tmpfs",
         "tracefs",
     ];
-    let mounts = fs::read_to_string("/proc/mounts")?;
     // Keyed by the numbers statvfs reports, which also catches the same
     // filesystem mounted twice (bind mounts, or WSL showing C: at both /mnt/c
     // and /usr/lib/wsl/drivers). The shortest mount point wins.
     // Two different filesystems with exactly the same size and usage would
     // collapse into one row, which is unlikely enough to live with.
     let mut found: HashMap<(u64, u64, u64), (PathBuf, u64, u64)> = HashMap::new();
-    for line in mounts.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(_device), Some(mount), Some(kind)) = (parts.next(), parts.next(), parts.next()) else {
-            continue;
-        };
-        if PSEUDO.contains(&kind) {
+    // Network mounts are left out: statvfs on one that stopped answering never returns.
+    for (mount, kind) in common::local_mounts() {
+        if PSEUDO.contains(&kind.as_str()) {
             continue;
         }
-        let mount = common::mount_path(mount);
         // Single files can be mount points too (WSL's /init); they aren't disks.
         if !mount.is_dir() {
             continue;

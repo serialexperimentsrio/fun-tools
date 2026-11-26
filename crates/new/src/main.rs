@@ -1,12 +1,15 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::SystemTime;
 
 use clap::Parser;
 use common::At;
 
-/// Create new files or directories. Missing parent directories are created too.
+/// Create new files or directories. Missing parent directories are created
+/// too. A file that already exists is left as it is, with its access and
+/// modification times set to now.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -18,7 +21,7 @@ struct Cli {
     #[arg(short, long)]
     dir: bool,
 
-    /// Empty a file that already exists instead of failing
+    /// Empty a file that already exists instead of just updating its times
     #[arg(short, long)]
     force: bool,
 }
@@ -69,8 +72,10 @@ fn make_file(path: &Path, force: bool) -> common::Result {
     }
     match options.open(path) {
         Ok(_) => Ok(()),
+        // Already there: just mark it as touched now, like `touch` would.
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            Err(format!("{}: already exists (use -f to empty it)", path.display()).into())
+            let now = SystemTime::now();
+            File::open(path).and_then(|f| f.set_times(FileTimes::new().set_accessed(now).set_modified(now))).at(path)
         }
         Err(e) => Err(e).at(path),
     }

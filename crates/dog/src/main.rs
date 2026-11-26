@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -52,8 +52,14 @@ fn main() -> ExitCode {
             let result = if path == Path::new("-") {
                 print(io::stdin().lock(), &mut out, &cli, &mut line_no).at(path)
             } else {
-                open(path, output, terminal && !cli.binary)
-                    .and_then(|f| print(f, &mut out, &cli, &mut line_no).at(path))
+                open(path, output, terminal && !cli.binary).and_then(|mut f| match cli.tail {
+                    // Without line numbers there's no need to read a big log
+                    // from the start; its end can be found from the back.
+                    Some(n) if !cli.number && f.get_ref().metadata().is_ok_and(|m| m.is_file()) => {
+                        tail_of(f.get_mut(), n, &mut out).at(path)
+                    }
+                    _ => print(f, &mut out, &cli, &mut line_no).at(path),
+                })
             };
             if let Err(e) = result {
                 if common::broken_pipe(&*e) {
@@ -67,6 +73,37 @@ fn main() -> ExitCode {
         out.flush()?;
         common::finish(ok)
     })
+}
+
+/// Writes the last `n` lines of a regular file, reading backwards from the
+/// end in chunks until it has them.
+fn tail_of(file: &mut File, n: usize, out: &mut impl Write) -> io::Result<()> {
+    const CHUNK: u64 = 64 * 1024;
+    if n == 0 {
+        return Ok(());
+    }
+    let len = file.metadata()?.len();
+    let mut pos = len;
+    let mut buf = Vec::new();
+    while pos > 0 {
+        let step = CHUNK.min(pos);
+        pos -= step;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut chunk = vec![0; step as usize];
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&buf);
+        buf = chunk;
+        // A newline at the very end closes the last line rather than starting another.
+        let body = buf.strip_suffix(b"\n").unwrap_or(&buf);
+        if body.iter().filter(|&&b| b == b'\n').count() >= n {
+            break;
+        }
+    }
+    let lines: Vec<&[u8]> = buf.split_inclusive(|&b| b == b'\n').collect();
+    for line in &lines[lines.len().saturating_sub(n)..] {
+        out.write_all(line)?;
+    }
+    Ok(())
 }
 
 fn open(path: &Path, output: Option<(u64, u64)>, skip_binary: bool) -> common::Result<BufReader<File>> {
@@ -149,5 +186,24 @@ mod tests {
         assert_eq!(run(&["--tail", "0"], text), "");
         assert_eq!(run(&["-n", "--head", "1"], text), "     1  a\n");
         assert_eq!(run(&["-n", "--tail", "1"], text), "     4  d");
+    }
+
+    #[test]
+    fn tails_big_files_from_the_back() {
+        let path = std::env::temp_dir().join(format!("dog-tail-{}", std::process::id()));
+        // Over 64 KiB, so the lines it wants span more than one chunk.
+        let text: String = (1..=20_000).map(|i| format!("line {i}\n")).collect();
+        let tail = |text: &str, n| {
+            fs::write(&path, text).unwrap();
+            let mut out = Vec::new();
+            tail_of(&mut File::open(&path).unwrap(), n, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(tail(&text, 2), "line 19999\nline 20000\n");
+        assert_eq!(tail(&text, 12_000).lines().next(), Some("line 8001"));
+        assert_eq!(tail("a\nb", 1), "b");
+        assert_eq!(tail("a\nb\n", 5), "a\nb\n");
+        assert_eq!(tail("", 3), "");
+        fs::remove_file(&path).unwrap();
     }
 }

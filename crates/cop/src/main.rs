@@ -1,5 +1,4 @@
 use std::env;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -200,10 +199,7 @@ fn hand_off(payload: &Payload, clipboard: &mut Clipboard) -> common::Result {
     match payload {
         Payload::Files(paths) => {
             stdin.write_all(b"f")?;
-            for path in paths {
-                stdin.write_all(path.as_os_str().as_bytes())?;
-                stdin.write_all(b"\n")?;
-            }
+            stdin.write_all(&common::join_paths(paths))?;
         }
         Payload::Text(text) => {
             stdin.write_all(b"t")?;
@@ -237,14 +233,7 @@ fn serve() -> common::Result {
     io::stdin().read_to_end(&mut input)?;
     let mut clipboard = Clipboard::new()?;
     match input.split_first() {
-        Some((b'f', list)) => {
-            let paths: Vec<PathBuf> = list
-                .split(|&b| b == b'\n')
-                .filter(|line| !line.is_empty())
-                .map(|line| PathBuf::from(OsStr::from_bytes(line)))
-                .collect();
-            clipboard.set().wait().file_list(&paths)?;
-        }
+        Some((b'f', list)) => clipboard.set().wait().file_list(&common::split_paths(list))?,
         Some((b't', text)) => clipboard.set().wait().text(String::from_utf8_lossy(text))?,
         _ => return Err("bad payload".into()),
     }

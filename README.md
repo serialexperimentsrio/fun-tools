@@ -1,19 +1,25 @@
+# Fun Tools
+
 <p align="center">
   <img src="Fun%20Tools.png" alt="Fun Tools logo" width="600">
 </p>
 
-<h1 align="center">Fun Tools</h1>
-
 <p align="center">
   <a href="https://github.com/serialexperimentsrio/fun-tools/actions/workflows/ci.yml"><img src="https://github.com/serialexperimentsrio/fun-tools/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.85-orange?logo=rust" alt="Rust 1.85 or newer">
   <img src="https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white" alt="Platform: Linux">
 </p>
 
 **Fun Tools** is a set of small command-line tools for Linux, written in Rust. They handle the everyday file, text and system jobs that GNU coreutils does, with a few ideas of their own: deleting goes to a trash you can undo, copying can go through the system clipboard, and the same flag means the same thing in every tool.
 
-It's a work in progress. The long-term goal is a friendlier replacement for coreutils: safe defaults, readable output, and `--json` wherever a script might want it.
+The long-term goal is a friendlier replacement for coreutils: safe defaults, readable output, and `--json` wherever a script might want it.
+
+> [!NOTE]
+> Fun Tools is at version 0.x. Commands, flags and output, JSON included, may still change between versions.
+
+> [!WARNING]
+> This is still in active development, so the tools may have bugs or behave in ways you don't expect. `del` keeps everything in a trash first, but don't trust Fun Tools with anything you can't afford to lose just yet.
 
 ## Tools
 
@@ -24,7 +30,7 @@ It's a work in progress. The long-term goal is a friendlier replacement for core
 | `sel` | Keep a list of selected paths for `cop`, `mov` and `del` to work on |
 | `mov` | Move or rename files and folders |
 | `del` | Delete to a trash you can restore from |
-| `new` | Create files or folders, along with any missing parents |
+| `new` | Create files or folders, along with any missing parents, or update a file's timestamps |
 | `dog` | Print files, numbered if you like, or just the head or tail |
 | `eco` | Print text |
 | `nav` | Change directory by path, by part of a folder's name, or back to where you were |
@@ -34,9 +40,9 @@ It's a work in progress. The long-term goal is a friendlier replacement for core
 | `usg` | Show CPU, memory, swap and disk usage, and the busiest processes |
 | `dat` | Show the date and time |
 | `mop` | Clear the screen |
-| `ted` | A text editor, not written yet |
+| `ted` | Edit a text file right in the terminal: type to edit, Ctrl+S to save, Ctrl+Q to quit |
 
-Every tool except `ted` has `--help`.
+Every tool has `--help`.
 
 ## A quick tour
 
@@ -65,10 +71,10 @@ sel mop                      # or just start over
 Delete without worrying about it:
 
 ```sh
-del notes.txt build/             # off to the trash
-idx ~/.trash                     # see what's in there
-del undel ~/.trash/*notes.txt    # put it back where it was
-del purge --older-than 7         # gone for good (asks first)
+del notes.txt build/                    # off to the trash
+idx --tree ~/.trash                     # see what's in there, by day
+del undel ~/.trash/2026-11-26/notes.txt # put it back where it was
+del purge --older-than 7                # gone for good (asks first)
 ```
 
 Get around and look around:
@@ -80,6 +86,7 @@ nav -                        # back to where you were
 idx -l --tree --depth 2      # a two-level tree with sizes and dates
 loc '*.rs' src -t file       # every Rust file under src
 dog --tail 50 app.log        # the end of a log
+ted notes.txt                # make a quick edit
 ```
 
 Check on the machine:
@@ -94,18 +101,36 @@ hid --json                   # everything, for a script
 
 ## The trash
 
-`del` never erases anything straight away. Files go to a trash folder on the same drive: `~/.trash` for anything on the drive your home is on, and `.trash` at the top of any other drive, like `/mnt/d/.trash`. That keeps deleting a quick rename, even for big folders. A trash folder only appears once you've deleted something on that drive.
+`del` never erases anything straight away. Files go to a trash folder on the same drive, which keeps deleting a quick rename, even for big folders:
 
-Each item is named after the moment it was deleted, so you can tell at a glance when something went in, and when it's due to go:
+- `~/.trash` for anything on the drive your home is on.
+- `.trash/<your user id>` at the top of any other drive, like `/mnt/d/.trash/1000`. The `.trash` there is shared the way `/tmp` is: everyone gets a private folder inside it, and nobody can touch anyone else's.
+- root always uses the top of the drive, so `sudo del /etc/old.conf` lands in `/.trash/0` rather than somewhere in `/root`.
+
+A trash folder only appears once you've deleted something on that drive. If a drive's trash can't be used, say its top isn't writable, `del` falls back to `~/.trash`. That works too, it's just a copy rather than a rename.
+
+Inside, everything is sorted into a folder for the day it was deleted, under its own name, so you can tell at a glance when something went in and when it's due to go. Deleting two files with the same name on the same day gives the second one a `(2)`:
 
 ```
-2026-11-26_10-47-23_build/
-2026-11-26_10-12-03_notes.txt
+~/.trash/
+├── 2026-11-25/
+│   └── notes.txt
+└── 2026-11-26/
+    ├── build/
+    ├── notes.txt
+    └── notes (2).txt
 ```
 
-A hidden `.meta` folder next to them remembers where each one came from, so `del undel` puts it back in the same place under its own name (`del restore` works too). If something else has taken that spot in the meantime, it stops and tells you to use `-f`.
+A hidden `.meta` folder next to them remembers where each one came from, so `del undel` puts it back in the same place under its own name (`del restore` works too). If something else has taken that spot in the meantime, it stops and tells you to use `-f`. A day's folder disappears once it's empty.
 
 Anything that has been in the trash for more than 30 days is purged the next time you delete something. Set `FUN_TOOLS_TRASH_DAYS` to change that, or to `0` to keep everything until you run `del purge` yourself. `del purge` asks before it deletes anything, and in a script, where there's nobody to ask, it needs `--yes`.
+
+A few things to keep in mind:
+
+- Network drives (NFS, SMB, sshfs) are never searched for trash folders, so one that stops answering can't hang `del`.
+- A drive that lives in memory, like `/dev/shm`, loses its trash along with everything else when the machine restarts.
+- The 30 days are counted by the system clock. If the clock jumps forward, things get purged early.
+- A name already at the length limit has no room for a `(2)`, so it gets shortened in the trash. Its full path is still kept, so it comes back under its real name.
 
 The selection and a pending cut are kept separately, in `$XDG_DATA_HOME/fun-tools` (usually `~/.local/share/fun-tools`).
 
@@ -130,6 +155,8 @@ Flags change how the action behaves. The shared ones mean the same thing in ever
 
 Every other short flag belongs to a single tool, so a letter never means two different things. Nothing gets overwritten unless you pass `-f`. Colors only show up on a terminal, and `NO_COLOR=1` turns them off.
 
+`loc` and `idx --tree` stay on the drive they start on, so `loc notes /` under WSL doesn't wander off through all of `/mnt/c`. Add `--cross-drives` when you do want that.
+
 `idx`, `loc`, `sel idx`, `hid` and `usg` can all print JSON, and it has the same shape everywhere: lists are arrays of objects, sizes are in bytes, times are Unix seconds, and CPU is a percentage. An entry's `type` is `file`, `dir` or `link`, and anything that couldn't be found is `null`.
 
 ## Installing
@@ -142,7 +169,7 @@ cargo test
 
 # install one tool, or all of them
 cargo install --path crates/dog
-for t in cop dat del dog eco hid idx loc mop mov nav new put sel usg; do cargo install --path crates/$t; done
+for t in cop dat del dog eco hid idx loc mop mov nav new put sel ted usg; do cargo install --path crates/$t; done
 ```
 
 `nav` needs one line in your shell's startup file. A program can't change the directory of the shell that started it, so `nav` works out where to go and a small shell function does the actual `cd`:
